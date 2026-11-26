@@ -5,7 +5,7 @@ import {
   decryptPassword,
   getAccountKey,
   clearCachedKey
-} from './crypto.js';
+} from '../crypto.js';
 
 test('KeyLocker Performance & Functional Verification', async (t) => {
   const uid = 'test_user_uid_perf_123';

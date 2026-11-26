@@ -68,3 +68,4 @@ const testDerivationTime = async (iterations = 10) => {
 
 testDerivationTime(5);
 testDerivationTime(20);
+

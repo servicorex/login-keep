@@ -246,16 +246,6 @@ export default function App() {
     }, 30000);
   };
 
-  const generateStrongPassword = () => {
-    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+~`|}{[]:;?><,./-=';
-    let pass = '';
-    for (let i = 0; i < 16; i++) {
-      pass += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    setNewPassword(pass);
-    triggerToast('Strong 16-character password generated!');
-  };
-
   const openCreateModal = () => {
     setEditingItemId(null);
     setNewWebsite('');
@@ -852,19 +842,9 @@ export default function App() {
 
               {/* Password */}
               <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-medium text-slate-300">
-                    Password <span className="text-rose-400">*</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={generateStrongPassword}
-                    className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition cursor-pointer"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>Generate Strong</span>
-                  </button>
-                </div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Password <span className="text-rose-400">*</span>
+                </label>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input

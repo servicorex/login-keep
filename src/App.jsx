@@ -91,9 +91,10 @@ export default function App() {
   const [iconErrors, setIconErrors] = useState({});
   const [avatarError, setAvatarError] = useState(false);
 
-  // Modal / Form state for Add/Edit
+  // Modal / Form state for Add/Edit & Delete Confirmation
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingItemId, setEditingItemId] = useState(null);
+  const [deletingItem, setDeletingItem] = useState(null); // { id, website }
   const [newWebsite, setNewWebsite] = useState('');
   const [newUrl, setNewUrl] = useState('');
   const [newCustomIcon, setNewCustomIcon] = useState('');
@@ -332,14 +333,16 @@ export default function App() {
     }
   };
 
-  const handleDeleteItem = async (id, name) => {
-    if (!currentUser) return;
+  const confirmDelete = async () => {
+    if (!currentUser || !deletingItem) return;
     try {
-      const itemDoc = doc(db, 'users', currentUser.uid, 'vault', id);
+      const itemDoc = doc(db, 'users', currentUser.uid, 'vault', deletingItem.id);
       await deleteDoc(itemDoc);
-      triggerToast(`Deleted ${name} entry`);
+      triggerToast(`Deleted ${deletingItem.website} entry`);
     } catch (err) {
       triggerToast(err.message || 'Failed to delete entry.', 'error');
+    } finally {
+      setDeletingItem(null);
     }
   };
 
@@ -651,7 +654,7 @@ export default function App() {
                               <Edit3 className="w-4 h-4" />
                             </button>
                             <button
-                              onClick={() => handleDeleteItem(item.id, item.website)}
+                              onClick={() => setDeletingItem({ id: item.id, website: item.website })}
                               title="Delete"
                               className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
                             >
@@ -976,6 +979,40 @@ export default function App() {
                 )}
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Delete Confirmation */}
+      {deletingItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl text-center">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="text-base font-bold text-white mb-1.5">
+              Delete {deletingItem.website}?
+            </h3>
+            <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+              Are you sure you want to permanently delete this saved password? This action cannot be undone.
+            </p>
+
+            <div className="flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => setDeletingItem(null)}
+                className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs transition border border-slate-700 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs transition shadow-lg shadow-rose-600/25 cursor-pointer"
+              >
+                Yes, Delete
+              </button>
+            </div>
           </div>
         </div>
       )}

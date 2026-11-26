@@ -526,9 +526,6 @@ export default function App() {
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 mb-8">
               <div>
                 <h1 className="text-2xl font-bold text-white tracking-tight">Your Password Locker</h1>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Authenticated as <span className="text-indigo-400 font-medium">{currentUser.email}</span>
-                </p>
               </div>
 
               <div className="flex items-center gap-3">

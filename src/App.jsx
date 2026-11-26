@@ -1,10 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  KeyRound, Shield, Search, Plus, Eye, EyeOff, Copy, Check, 
-  Trash2, ExternalLink, RefreshCw, Lock, Sparkles, LogIn, 
-  LogOut, Globe, User, CheckCircle2, AlertCircle, Laptop,
-  Image, Edit3, Mail, Key, Loader2
+  Shield, Search, Plus, Eye, EyeOff, Copy, Check, 
+  Trash2, ExternalLink, Lock, LogOut, Globe, User, CheckCircle2,
+  AlertCircle, Image, Edit3, Loader2, Sparkles
 } from 'lucide-react';
+import PixelKeyIcon from './components/PixelKeyIcon';
+import {
+  NavigationMenu,
+  NavigationMenuItem,
+  NavigationMenuLink,
+  NavigationMenuList,
+} from '@/components/ui/navigation-menu';
+import { cn } from '@/lib/utils';
+import HeroLanding from './components/HeroLanding';
+import AuthPage from './components/AuthPage';
 import { 
   auth, 
   db, 
@@ -73,10 +82,9 @@ export default function App() {
   // Vault data state
   const [vaultItems, setVaultItems] = useState([]);
   const [dataLoading, setDataLoading] = useState(false);
-  const [firestoreError, setFirestoreError] = useState(null);
 
-  // Email/Password sign-in modal state
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  // Unauthenticated view state: 'hero' or 'auth'
+  const [authView, setAuthView] = useState('hero');
   const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
@@ -129,7 +137,6 @@ export default function App() {
     }
 
     setDataLoading(true);
-    setFirestoreError(null);
     const vaultRef = collection(db, 'users', currentUser.uid, 'vault');
 
     // Pre-derive account key once in background
@@ -172,7 +179,7 @@ export default function App() {
       setDataLoading(false);
     }, (error) => {
       console.error("Firestore error:", error);
-      setFirestoreError(error.message);
+      triggerToast(error.message || 'Failed to sync vault.', 'error');
       setDataLoading(false);
     });
 
@@ -185,7 +192,7 @@ export default function App() {
       setAuthSubmitting(true);
       await loginWithGoogle();
       triggerToast('Signed in with Google!');
-      setIsAuthModalOpen(false);
+      setAuthView('hero');
     } catch (err) {
       triggerToast(err.message || 'Google sign-in failed', 'error');
     } finally {
@@ -209,7 +216,7 @@ export default function App() {
         await loginWithEmail(emailInput, passwordInput);
         triggerToast('Signed in successfully!');
       }
-      setIsAuthModalOpen(false);
+      setAuthView('hero');
       setEmailInput('');
       setPasswordInput('');
     } catch (err) {
@@ -253,6 +260,8 @@ export default function App() {
     }, 30000);
   };
 
+  const [formError, setFormError] = useState('');
+
   const openCreateModal = () => {
     setEditingItemId(null);
     setNewWebsite('');
@@ -260,6 +269,7 @@ export default function App() {
     setNewCustomIcon('');
     setNewUsername(''); // Never prefilled
     setNewPassword('');
+    setFormError('');
     setIconMode('auto');
     setIsAddModalOpen(true);
   };
@@ -271,14 +281,20 @@ export default function App() {
     setNewCustomIcon(item.customIcon || '');
     setNewUsername(item.username || '');
     setNewPassword(item.password);
+    setFormError('');
     setIconMode(item.customIcon ? 'custom' : 'auto');
     setIsAddModalOpen(true);
   };
 
   const handleSavePassword = async (e) => {
     e.preventDefault();
-    if (!newWebsite.trim() || !newPassword.trim()) {
-      triggerToast('Please provide a website name and password.', 'error');
+    setFormError('');
+    if (!newWebsite.trim()) {
+      setFormError('Please enter a website or service name.');
+      return;
+    }
+    if (!newPassword.trim()) {
+      setFormError('Please enter a password.');
       return;
     }
 
@@ -358,180 +374,245 @@ export default function App() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400 gap-3">
-        <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
-        <span className="text-sm font-medium">Opening KeyLocker...</span>
+      <div className="min-h-screen bg-[#05050a] flex flex-col items-center justify-center text-slate-400 gap-3">
+        <Loader2 className="w-8 h-8 text-purple-500 animate-spin" />
+        <span className="text-sm font-medium">Opening LoginKeep...</span>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+    <div
+      className={`min-h-screen flex flex-col font-sans relative ${
+        currentUser
+          ? 'bg-[#0b101b] text-slate-100 selection:bg-teal-500/30 selection:text-teal-200'
+          : 'bg-[#05050a] text-slate-100 selection:bg-purple-500/40 selection:text-white'
+      }`}
+    >
+      {/* Decorative ambient background glows for full-color dashboard */}
+      {currentUser && (
+        <div className="pointer-events-none fixed inset-0 overflow-hidden z-0">
+          <div className="absolute -top-40 left-1/4 w-[650px] h-[380px] rounded-full bg-teal-500/[0.12] blur-[130px]" />
+          <div className="absolute top-1/3 right-10 w-[550px] h-[350px] rounded-full bg-cyan-500/[0.09] blur-[140px]" />
+          <div className="absolute -bottom-20 left-10 w-[600px] h-[350px] rounded-full bg-emerald-600/[0.08] blur-[130px]" />
+          <div
+            className="absolute inset-0 opacity-[0.25]"
+            style={{
+              backgroundImage: 'radial-gradient(rgba(45, 212, 191, 0.25) 1px, transparent 1px)',
+              backgroundSize: '24px 24px',
+            }}
+          />
+        </div>
+      )}
       {/* Toast Notification */}
       {notification && (
-        <div className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-2xl backdrop-blur-md border text-sm font-medium transition-all duration-300 animate-in fade-in slide-in-from-top-4 ${
-          notification.type === 'error' 
-            ? 'bg-rose-950/80 border-rose-500/50 text-rose-200' 
-            : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-200'
-        }`}>
-          {notification.type === 'error' ? <AlertCircle className="w-4 h-4 text-rose-400" /> : <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+        <div
+          className={`fixed top-4 right-4 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl border text-sm font-medium transition-all duration-200 backdrop-blur-md ${
+            notification.type === 'error'
+              ? 'bg-rose-950/90 border-rose-500/50 text-rose-200'
+              : 'bg-[#0f1d2e]/95 border-teal-500/40 text-teal-200'
+          }`}
+        >
+          {notification.type === 'error' ? (
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-teal-400" />
+          )}
           <span>{notification.msg}</span>
         </div>
       )}
 
       {/* Navigation Header */}
-      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-xl sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/25 ring-1 ring-white/20">
-              <KeyRound className="w-5 h-5 text-white" />
+      <header
+        className={`sticky top-0 z-40 transition-all duration-300 ${
+          currentUser
+            ? 'bg-[#0d1524]/85 backdrop-blur-xl border-b border-teal-500/15 shadow-[0_4px_20px_rgba(0,0,0,0.3)]'
+            : 'pt-4 pb-2 px-4 sm:px-8 bg-transparent'
+        }`}
+      >
+        <div
+          className={`mx-auto transition-all duration-300 ${
+            currentUser
+              ? 'h-14 sm:h-16 flex items-center justify-between w-full px-4 sm:px-6 lg:px-10 xl:px-12'
+              : 'h-14 sm:h-16 flex items-center justify-between max-w-7xl px-4 sm:px-6 rounded-full footer-glass-pill bg-[#0c0d1b]/70 border border-purple-500/25 backdrop-blur-2xl shadow-[0_8px_32px_rgba(0,0,0,0.65)] ring-1 ring-white/10'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              if (!currentUser) setAuthView('hero');
+            }}
+            className="flex items-center gap-3 text-left cursor-pointer group"
+          >
+            <div
+              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-300 group-hover:scale-105 ${
+                currentUser
+                  ? 'bg-gradient-to-br from-teal-500 to-emerald-600 shadow-md shadow-teal-500/30 ring-1 ring-teal-400/30'
+                  : 'bg-gradient-to-tr from-purple-600/90 via-violet-600 to-indigo-600 shadow-[0_0_20px_rgba(168,85,247,0.45)] ring-1 ring-purple-400/40 rounded-full'
+              }`}
+            >
+              <PixelKeyIcon className="w-4 h-4 text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.8)]" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-lg tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
-                  KeyLocker
-                </span>
-                <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+            <div className="flex items-center gap-2.5">
+              <span
+                className={`font-black text-lg tracking-tight ${
+                  currentUser
+                    ? 'bg-gradient-to-r from-white via-slate-100 to-teal-200 bg-clip-text text-transparent'
+                    : 'bg-gradient-to-r from-white via-slate-100 to-purple-200 bg-clip-text text-transparent drop-shadow-[0_0_12px_rgba(168,85,247,0.3)]'
+                }`}
+              >
+                LoginKeep
+              </span>
+              {currentUser && (
+                <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-300 border border-teal-500/25">
                   Personal Vault
                 </span>
-              </div>
+              )}
             </div>
-          </div>
+          </button>
 
           <div className="flex items-center gap-3">
             {currentUser ? (
-              <div className="flex items-center gap-3 bg-slate-800/50 border border-slate-700/60 rounded-full py-1.5 pl-2 pr-3">
-                {currentUser.photoURL && !avatarError ? (
-                  <img 
-                    src={currentUser.photoURL} 
-                    alt={currentUser.displayName || currentUser.email} 
-                    referrerPolicy="no-referrer"
-                    crossOrigin="anonymous"
-                    className="w-7 h-7 rounded-full ring-2 ring-indigo-500/50 object-cover"
-                    onError={() => setAvatarError(true)}
-                  />
-                ) : (
-                  <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 text-white font-bold text-xs flex items-center justify-center shadow-inner ring-2 ring-indigo-500/30">
-                    {currentUser.displayName 
-                      ? currentUser.displayName.charAt(0).toUpperCase() 
-                      : (currentUser.email ? currentUser.email.charAt(0).toUpperCase() : 'U')}
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2.5 py-1 pl-1 pr-2.5 rounded-full bg-[#131f33]/80 border border-teal-500/20 shadow-inner">
+                  {currentUser.photoURL && !avatarError ? (
+                    <img
+                      src={currentUser.photoURL}
+                      alt={currentUser.displayName || currentUser.email}
+                      referrerPolicy="no-referrer"
+                      crossOrigin="anonymous"
+                      className="w-7 h-7 rounded-full object-cover border border-teal-500/30"
+                      onError={() => setAvatarError(true)}
+                    />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/30 font-semibold text-xs flex items-center justify-center">
+                      {currentUser.displayName
+                        ? currentUser.displayName.charAt(0).toUpperCase()
+                        : currentUser.email
+                          ? currentUser.email.charAt(0).toUpperCase()
+                          : 'U'}
+                    </div>
+                  )}
+                  <div className="hidden sm:block text-left text-xs pr-1">
+                    <p className="font-semibold text-slate-200 leading-tight">
+                      {currentUser.displayName || currentUser.email.split('@')[0]}
+                    </p>
+                    <p className="text-teal-400/80 text-[11px] leading-tight truncate max-w-[160px]">
+                      {currentUser.email}
+                    </p>
                   </div>
-                )}
-                <div className="hidden sm:block text-left text-xs">
-                  <p className="font-medium text-slate-200 leading-tight">
-                    {currentUser.displayName || currentUser.email.split('@')[0]}
-                  </p>
-                  <p className="text-slate-400 text-[11px] leading-tight truncate max-w-[140px]">
-                    {currentUser.email}
-                  </p>
                 </div>
-                <button 
+                <button
                   onClick={handleLogout}
                   title="Log out"
-                  className="p-1 hover:bg-slate-700/70 rounded-full text-slate-400 hover:text-rose-400 transition ml-1 cursor-pointer"
+                  aria-label="Log out"
+                  className="p-2 rounded-xl text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 border border-transparent hover:border-rose-500/30 transition-colors cursor-pointer"
                 >
                   <LogOut className="w-4 h-4" />
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={() => {
-                    setAuthMode('login');
-                    setIsAuthModalOpen(true);
-                  }}
-                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-xs transition border border-slate-700 cursor-pointer"
-                >
-                  Email Login
-                </button>
-                <button 
-                  onClick={handleGoogleSignIn}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-medium text-xs transition-all shadow-md active:scale-95 cursor-pointer"
-                >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
-                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                  </svg>
-                  <span>Google Sign In</span>
-                </button>
-              </div>
+              <NavigationMenu className="dark">
+                <NavigationMenuList className="flex items-center gap-1.5 sm:gap-2">
+                  <NavigationMenuItem>
+                    <NavigationMenuLink
+                      active={authView === 'hero'}
+                      asChild
+                      className={cn(
+                        "group relative inline-flex items-center justify-center font-medium text-xs text-slate-300 transition-all cursor-pointer",
+                        "hover:text-white",
+                        "data-active:text-white"
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthMode('login');
+                          setAuthView('auth');
+                        }}
+                        className="px-4 py-2 rounded-full text-slate-300 hover:text-white hover:bg-white/[0.08] transition-all duration-200 cursor-pointer"
+                      >
+                        Sign In
+                      </button>
+                    </NavigationMenuLink>
+                  </NavigationMenuItem>
+                  <NavigationMenuItem>
+                    <NavigationMenuLink
+                      active={authView === 'auth' && authMode === 'signup'}
+                      asChild
+                      className={cn(
+                        "group relative inline-flex items-center justify-center font-medium text-xs text-slate-300 transition-all cursor-pointer"
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthMode('signup');
+                          setAuthView('auth');
+                        }}
+                        className="px-5 py-2 rounded-full bg-gradient-to-r from-purple-600 via-violet-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold transition-all duration-300 shadow-[0_0_24px_rgba(168,85,247,0.4)] hover:shadow-[0_0_32px_rgba(168,85,247,0.6)] active:scale-95 cursor-pointer ring-1 ring-purple-400/40"
+                      >
+                        Get Started
+                      </button>
+                    </NavigationMenuLink>
+                  </NavigationMenuItem>
+                </NavigationMenuList>
+              </NavigationMenu>
             )}
           </div>
         </div>
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-6xl mx-auto w-full px-4 sm:px-6 py-8">
-        {!currentUser ? (
-          /* Landing Screen */
-          <div className="max-w-2xl mx-auto text-center py-16 px-4">
-            <div className="inline-flex p-3 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 mb-6 shadow-inner">
-              <Shield className="w-8 h-8" />
-            </div>
-            <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-white mb-4">
-              Your Personal, Simple <br />
-              <span className="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
-                Password Safe
-              </span>
-            </h1>
-            <p className="text-slate-400 text-base sm:text-lg mb-8 leading-relaxed">
-              Never reset a forgotten password again. Sign in directly with Google or Email. Passwords are saved with AES-256-GCM encryption, isolated strictly to your account.
-            </p>
-
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              <button 
-                onClick={handleGoogleSignIn}
-                className="w-full sm:w-auto flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-all shadow-xl shadow-indigo-600/30 hover:scale-[1.02] active:scale-95 cursor-pointer"
-              >
-                <LogIn className="w-5 h-5" />
-                <span>Continue with Google</span>
-              </button>
-
-              <button 
-                onClick={() => {
-                  setAuthMode('signup');
-                  setIsAuthModalOpen(true);
-                }}
-                className="w-full sm:w-auto px-6 py-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition border border-slate-700 cursor-pointer"
-              >
-                Create Account with Email
-              </button>
-            </div>
-
-            {/* Feature Highlights */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-16 text-left">
-              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-                <Lock className="w-5 h-5 text-indigo-400 mb-2" />
-                <h3 className="font-semibold text-slate-200 text-sm">AES-256-GCM Encrypted</h3>
-                <p className="text-xs text-slate-400 mt-1">Passwords are encrypted with fresh random 96-bit nonces before saving.</p>
-              </div>
-              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-                <Sparkles className="w-5 h-5 text-purple-400 mb-2" />
-                <h3 className="font-semibold text-slate-200 text-sm">Automatic Favicons</h3>
-                <p className="text-xs text-slate-400 mt-1">Official high-res logos fetch automatically as you type website names.</p>
-              </div>
-              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-                <Laptop className="w-5 h-5 text-emerald-400 mb-2" />
-                <h3 className="font-semibold text-slate-200 text-sm">Real-Time Cloud Sync</h3>
-                <p className="text-xs text-slate-400 mt-1">Changes sync instantly across your phone, tablet, and PC.</p>
-              </div>
-            </div>
-          </div>
+      {!currentUser ? (
+        authView === 'auth' ? (
+          <AuthPage
+            authMode={authMode}
+            setAuthMode={setAuthMode}
+            emailInput={emailInput}
+            setEmailInput={setEmailInput}
+            passwordInput={passwordInput}
+            setPasswordInput={setPasswordInput}
+            authSubmitting={authSubmitting}
+            onGoogleSignIn={handleGoogleSignIn}
+            onEmailAuth={handleEmailAuth}
+            onBack={() => setAuthView('hero')}
+          />
         ) : (
-          /* Authenticated Direct Vault Dashboard */
+          <HeroLanding
+            onGetStarted={() => {
+              setAuthMode('signup');
+              setAuthView('auth');
+            }}
+            onSignIn={() => {
+              setAuthMode('login');
+              setAuthView('auth');
+            }}
+          />
+        )
+      ) : (
+      <main className="relative z-10 flex-1 w-full px-4 sm:px-6 lg:px-10 xl:px-12 py-6 sm:py-8">
           <div>
-            {/* Top Toolbar */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 mb-8">
+            {/* Dashboard Heading Banner */}
+            <div className="bg-gradient-to-r from-[#101b2d] via-[#132238] to-[#101b2d] border border-teal-500/20 rounded-2xl p-5 sm:p-6 mb-6 shadow-[0_4px_24px_rgba(0,0,0,0.35)] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <h1 className="text-2xl font-bold text-white tracking-tight">Your Password Locker</h1>
+                <div className="flex items-center gap-2 mb-1">
+                  <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+                    Your Passwords
+                  </h1>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-teal-500/15 text-teal-300 border border-teal-500/30">
+                    <Sparkles className="w-2.5 h-2.5" /> AES-256
+                  </span>
+                </div>
+                <p className="text-xs sm:text-sm text-slate-400">
+                  All your logins, encrypted and organized in one place.
+                </p>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center">
                 <button
                   onClick={openCreateModal}
-                  className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/25 active:scale-95 cursor-pointer"
+                  className="w-full sm:w-auto min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 active:scale-[0.98] text-white font-semibold text-sm transition-all shadow-lg shadow-teal-500/25 ring-1 ring-white/10 cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
                   <span>Add Password</span>
@@ -539,121 +620,139 @@ export default function App() {
               </div>
             </div>
 
-            {/* Search and Stats Bar */}
-            <div className="flex flex-col sm:flex-row items-center gap-4 mb-6">
-              <div className="relative flex-1 w-full">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input 
+            {/* Search and Statistics */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-6">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-teal-400/70 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
                   type="text"
-                  placeholder="Search websites, apps, or usernames..."
+                  placeholder="Search websites, apps or usernames..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-900/80 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition"
+                  className="w-full min-h-[44px] bg-[#111c2e]/90 border border-teal-500/20 rounded-xl pl-10 pr-16 py-2.5 text-sm text-slate-100 placeholder:text-slate-400 shadow-inner focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 transition-colors"
                 />
                 {searchQuery && (
-                  <button 
+                  <button
                     onClick={() => setSearchQuery('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-slate-300 cursor-pointer"
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-medium text-teal-400 hover:text-teal-200 cursor-pointer"
                   >
                     Clear
                   </button>
                 )}
               </div>
 
-              <div className="flex items-center gap-2 text-xs text-slate-400 bg-slate-900/50 border border-slate-800 px-4 py-2.5 rounded-xl whitespace-nowrap">
-                <Shield className="w-4 h-4 text-emerald-400" />
+              <div className="inline-flex min-h-[44px] items-center justify-center gap-2 text-xs font-semibold text-teal-200 bg-[#111c2e]/90 border border-teal-500/25 px-4 py-2.5 rounded-xl whitespace-nowrap shadow-sm">
+                <Shield className="w-4 h-4 text-teal-400" />
                 <span>{filteredItems.length} saved passwords</span>
               </div>
             </div>
 
             {/* Content State */}
             {dataLoading ? (
-              <div className="flex flex-col items-center justify-center py-20 text-slate-500 gap-2">
-                <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
-                <span className="text-xs">Loading your saved credentials...</span>
+              <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-2.5">
+                <Loader2 className="w-6 h-6 animate-spin text-teal-400" />
+                <span className="text-sm">Loading your saved credentials...</span>
               </div>
             ) : filteredItems.length === 0 ? (
-              <div className="text-center py-16 bg-slate-900/40 border border-slate-800/80 rounded-2xl">
-                <div className="inline-flex p-3 rounded-2xl bg-slate-800 text-slate-400 mb-3">
-                  <KeyRound className="w-6 h-6" />
+              <div className="text-center py-14 px-6 bg-[#101b2d]/80 border border-teal-500/20 rounded-2xl shadow-xl">
+                <div className="inline-flex p-3.5 rounded-2xl bg-teal-500/10 text-teal-400 border border-teal-500/20 mb-4">
+                  <PixelKeyIcon className="w-6 h-6 text-teal-400" />
                 </div>
-                <h3 className="text-slate-200 font-semibold mb-1">No passwords in your vault</h3>
-                <p className="text-slate-500 text-xs max-w-sm mx-auto mb-4">
-                  {searchQuery ? `No credentials match "${searchQuery}"` : "Add your first website password. It is encrypted and saved directly to your account."}
+                <h3 className="text-base font-semibold text-white mb-1.5">
+                  {searchQuery ? 'No matching passwords' : 'Your vault is empty'}
+                </h3>
+                <p className="text-sm text-slate-400 max-w-sm mx-auto mb-6">
+                  {searchQuery
+                    ? `No credentials match "${searchQuery}".`
+                    : 'Save your first login and keep everything organized in one place.'}
                 </p>
-                <button
-                  onClick={openCreateModal}
-                  className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 text-xs font-medium border border-indigo-500/30 transition cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add your first password</span>
-                </button>
+                {searchQuery ? (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#16243b] text-slate-200 hover:bg-[#1a2d4a] text-sm font-medium border border-teal-500/20 transition-colors cursor-pointer"
+                  >
+                    Clear search
+                  </button>
+                ) : (
+                  <button
+                    onClick={openCreateModal}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 text-white text-sm font-semibold transition-all shadow-lg shadow-teal-500/25 cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add your first password</span>
+                  </button>
+                )}
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
                 {filteredItems.map((item) => {
                   const isPassVisible = visiblePasswords[item.id];
                   const isCopiedUser = copiedId === `${item.id}-Username`;
                   const isCopiedPass = copiedId === `${item.id}-Password`;
                   const favicon = getFaviconUrl(item);
                   const hasIconError = iconErrors[item.id];
+                  const displayUrl = item.url
+                    ? item.url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+                    : '';
 
                   return (
-                    <div 
+                    <div
                       key={item.id}
-                      className="group bg-slate-900/70 hover:bg-slate-900 border border-slate-800 hover:border-slate-700/80 rounded-2xl p-4 transition-all duration-200 flex flex-col justify-between shadow-sm hover:shadow-xl hover:shadow-black/40"
+                      className="group relative bg-[#101b2d]/90 hover:bg-[#132238] border border-teal-500/20 hover:border-teal-400/50 rounded-2xl p-4 sm:p-5 transition-all duration-200 flex flex-col justify-between shadow-[0_4px_16px_rgba(0,0,0,0.3)] hover:shadow-[0_12px_28px_rgba(20,184,166,0.15)] hover:-translate-y-0.5"
                     >
                       <div>
-                        {/* Header: Favicon & Website */}
-                        <div className="flex items-start justify-between gap-3 mb-3">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-xl bg-slate-900 border border-slate-700/60 flex items-center justify-center shadow-md overflow-hidden relative group-hover:border-slate-500 transition shrink-0">
+                        {/* Card Header: Favicon, Website, URL & Actions */}
+                        <div className="flex items-start justify-between gap-3 mb-4">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-10 h-10 rounded-xl bg-[#0c1422] border border-teal-500/25 flex items-center justify-center overflow-hidden shrink-0 shadow-inner">
                               {!hasIconError ? (
-                                <img 
-                                  src={favicon} 
+                                <img
+                                  src={favicon}
                                   alt={item.website}
                                   className="w-full h-full object-cover"
                                   onError={() => setIconErrors(prev => ({ ...prev, [item.id]: true }))}
                                 />
                               ) : (
-                                <span className="font-bold text-slate-300 text-base">
+                                <span className="font-bold text-teal-400 text-base">
                                   {item.website?.charAt(0).toUpperCase()}
                                 </span>
                               )}
                             </div>
-                            <div>
-                              <h3 className="font-semibold text-slate-200 text-sm group-hover:text-white transition flex items-center gap-1.5">
+                            <div className="min-w-0">
+                              <h3 className="font-semibold text-white text-sm truncate">
                                 {item.website}
-                                {item.url && (
-                                  <a 
-                                    href={item.url} 
-                                    target="_blank" 
-                                    rel="noreferrer"
-                                    title="Open website"
-                                    className="text-slate-500 hover:text-indigo-400 transition"
-                                  >
-                                    <ExternalLink className="w-3.5 h-3.5" />
-                                  </a>
-                                )}
                               </h3>
-                              <span className="text-[11px] text-slate-500">
-                                {item.updatedAt?.toDate ? item.updatedAt.toDate().toLocaleDateString() : 'Saved'}
-                              </span>
+                              {item.url ? (
+                                <a
+                                  href={item.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={item.url}
+                                  className="text-xs text-teal-400/80 hover:text-teal-300 transition-colors inline-flex items-center gap-1 max-w-full"
+                                >
+                                  <span className="truncate">{displayUrl}</span>
+                                  <ExternalLink className="w-3 h-3 shrink-0" />
+                                </a>
+                              ) : (
+                                <span className="text-xs text-slate-400">Saved login</span>
+                              )}
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                          <div className="flex items-center gap-1 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100 transition-opacity">
                             <button
                               onClick={() => openEditModal(item)}
-                              title="Edit item & icon"
-                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition cursor-pointer"
+                              title="Edit"
+                              aria-label={`Edit ${item.website}`}
+                              className="p-1.5 text-slate-400 hover:text-teal-300 hover:bg-teal-500/10 rounded-lg transition-colors cursor-pointer"
                             >
                               <Edit3 className="w-4 h-4" />
                             </button>
                             <button
                               onClick={() => setDeletingItem({ id: item.id, website: item.website })}
                               title="Delete"
-                              className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
+                              aria-label={`Delete ${item.website}`}
+                              className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -661,26 +760,33 @@ export default function App() {
                         </div>
 
                         {/* Username row */}
-                        <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-2.5 mb-2 flex items-center justify-between text-xs">
+                        <div className="bg-[#0b1424]/90 border border-teal-500/15 rounded-xl px-3 py-2 mb-2 flex items-center justify-between text-xs">
                           <div className="flex items-center gap-2 overflow-hidden mr-2">
-                            <User className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                            <span className="text-slate-300 truncate font-mono">{item.username || 'No Username'}</span>
+                            <User className="w-3.5 h-3.5 text-teal-400/70 shrink-0" />
+                            <span className="text-slate-200 truncate font-mono">
+                              {item.username || 'No username'}
+                            </span>
                           </div>
                           {item.username && (
                             <button
                               onClick={() => copyToClipboard(item.username, item.id, 'Username')}
                               title="Copy username"
-                              className="p-1 text-slate-400 hover:text-indigo-400 rounded transition shrink-0 cursor-pointer"
+                              aria-label="Copy username"
+                              className="p-1 text-slate-400 hover:text-teal-300 rounded transition-colors shrink-0 cursor-pointer"
                             >
-                              {isCopiedUser ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                              {isCopiedUser ? (
+                                <Check className="w-3.5 h-3.5 text-teal-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
                             </button>
                           )}
                         </div>
 
                         {/* Password row */}
-                        <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-2.5 flex items-center justify-between text-xs">
+                        <div className="bg-[#0b1424]/90 border border-teal-500/15 rounded-xl px-3 py-2 flex items-center justify-between text-xs">
                           <div className="flex items-center gap-2 overflow-hidden mr-2 font-mono">
-                            <KeyRound className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                            <PixelKeyIcon className="w-3.5 h-3.5 text-teal-400/70 shrink-0" />
                             <span className="text-slate-200 truncate">
                               {isPassVisible ? item.password : '••••••••••••'}
                             </span>
@@ -688,17 +794,23 @@ export default function App() {
                           <div className="flex items-center gap-1 shrink-0">
                             <button
                               onClick={() => togglePasswordVisibility(item.id)}
-                              title={isPassVisible ? "Hide password" : "Show password"}
-                              className="p-1 text-slate-400 hover:text-indigo-400 rounded transition cursor-pointer"
+                              title={isPassVisible ? 'Hide password' : 'Show password'}
+                              aria-label={isPassVisible ? 'Hide password' : 'Show password'}
+                              className="p-1 text-slate-400 hover:text-teal-300 rounded transition-colors cursor-pointer"
                             >
                               {isPassVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                             </button>
                             <button
                               onClick={() => copyToClipboard(item.password, item.id, 'Password')}
                               title="Copy password"
-                              className="p-1 text-slate-400 hover:text-indigo-400 rounded transition cursor-pointer"
+                              aria-label="Copy password"
+                              className="p-1 text-slate-400 hover:text-teal-300 rounded transition-colors cursor-pointer"
                             >
-                              {isCopiedPass ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                              {isCopiedPass ? (
+                                <Check className="w-3.5 h-3.5 text-teal-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
                             </button>
                           </div>
                         </div>
@@ -709,41 +821,48 @@ export default function App() {
               </div>
             )}
           </div>
-        )}
       </main>
+        )}
 
       {/* Modal: Add or Edit Password */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-[#101b2d] border border-teal-500/30 rounded-2xl w-full max-w-lg p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
-                  <KeyRound className="w-4 h-4" />
+                <div className="w-9 h-9 rounded-xl bg-teal-500/15 text-teal-300 border border-teal-500/30 flex items-center justify-center">
+                  <PixelKeyIcon className="w-4 h-4 text-teal-400" />
                 </div>
                 <h2 className="text-lg font-bold text-white">
-                  {editingItemId ? 'Edit Credentials' : 'Save New Password'}
+                  {editingItemId ? 'Edit Password' : 'Add Password'}
                 </h2>
               </div>
-              <button 
+              <button
                 onClick={() => setIsAddModalOpen(false)}
-                className="text-slate-400 hover:text-slate-200 text-sm cursor-pointer"
+                aria-label="Close modal"
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleSavePassword} className="space-y-4">
+            <form onSubmit={handleSavePassword} className="space-y-4" noValidate>
+              {formError && (
+                <div className="px-3.5 py-2.5 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-200 text-xs font-medium">
+                  {formError}
+                </div>
+              )}
+
               {/* Website Name & Live Icon Preview */}
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Website or Service Name <span className="text-rose-400">*</span>
+                <label className="block text-xs font-medium text-slate-200 mb-1.5">
+                  Website name <span className="text-rose-400">*</span>
                 </label>
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-slate-900 border border-slate-700/60 flex items-center justify-center shrink-0 shadow-md overflow-hidden">
-                    <img 
-                      src={previewFaviconUrl} 
-                      alt="Icon preview" 
+                  <div className="w-10 h-10 rounded-xl bg-[#0c1422] border border-teal-500/30 flex items-center justify-center shrink-0 overflow-hidden shadow-inner">
+                    <img
+                      src={previewFaviconUrl}
+                      alt="Icon preview"
                       className="w-full h-full object-cover"
                       onError={(e) => {
                         e.target.style.display = 'none';
@@ -754,38 +873,49 @@ export default function App() {
                     />
                   </div>
                   <div className="relative flex-1">
-                    <Globe className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <Globe className="w-4 h-4 text-teal-400/70 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
                       required
-                      placeholder="e.g. Netflix, Spotify, GitHub, Amazon"
+                      placeholder="e.g. Netflix, Spotify, GitHub"
                       value={newWebsite}
-                      onChange={(e) => setNewWebsite(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      onChange={(e) => {
+                        setNewWebsite(e.target.value);
+                        if (formError) setFormError('');
+                      }}
+                      className="w-full bg-[#0c1422] border border-teal-500/25 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 transition-colors"
                     />
                   </div>
                 </div>
               </div>
 
               {/* Icon Mode Tabs */}
-              <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
+              <div className="bg-[#0c1422] border border-teal-500/20 rounded-xl p-3">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
-                    <Image className="w-3.5 h-3.5 text-indigo-400" />
-                    Website Icon / Favicon
+                  <span className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+                    <Image className="w-3.5 h-3.5 text-teal-400" />
+                    Website Icon
                   </span>
-                  <div className="flex bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px]">
+                  <div className="flex bg-[#101b2d] p-0.5 rounded-lg border border-teal-500/25 text-[11px]">
                     <button
                       type="button"
                       onClick={() => setIconMode('auto')}
-                      className={`px-2.5 py-1 rounded-md transition cursor-pointer ${iconMode === 'auto' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-slate-200'}`}
+                      className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                        iconMode === 'auto'
+                          ? 'bg-teal-500 text-white font-medium shadow-xs'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
                     >
                       Auto Favicon
                     </button>
                     <button
                       type="button"
                       onClick={() => setIconMode('custom')}
-                      className={`px-2.5 py-1 rounded-md transition cursor-pointer ${iconMode === 'custom' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-slate-200'}`}
+                      className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                        iconMode === 'custom'
+                          ? 'bg-teal-500 text-white font-medium shadow-xs'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
                     >
                       Custom Icon URL
                     </button>
@@ -793,8 +923,8 @@ export default function App() {
                 </div>
 
                 {iconMode === 'auto' ? (
-                  <p className="text-[11px] text-slate-500 leading-normal">
-                    Automatically fetches the official high-resolution favicon based on the website name.
+                  <p className="text-[11px] text-slate-400 leading-normal">
+                    Automatically fetches the official favicon based on the website name.
                   </p>
                 ) : (
                   <div>
@@ -803,68 +933,69 @@ export default function App() {
                       placeholder="Paste image/icon URL (e.g. https://example.com/logo.png)"
                       value={newCustomIcon}
                       onChange={(e) => setNewCustomIcon(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="w-full bg-[#101b2d] border border-teal-500/25 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400"
                     />
-                    <p className="text-[10px] text-slate-500 mt-1">
-                      Enter any direct link to an SVG, PNG, or ICO image.
-                    </p>
                   </div>
                 )}
               </div>
 
               {/* Direct Website URL */}
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Direct Website URL <span className="text-slate-500 font-normal">(Optional)</span>
+                <label className="block text-xs font-medium text-slate-200 mb-1.5">
+                  Website URL <span className="text-slate-400 font-normal">(Optional)</span>
                 </label>
                 <div className="relative">
-                  <ExternalLink className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <ExternalLink className="w-4 h-4 text-teal-400/70 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     placeholder="e.g. https://netflix.com/login"
                     value={newUrl}
                     onChange={(e) => setNewUrl(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full bg-[#0c1422] border border-teal-500/25 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 transition-colors"
                   />
                 </div>
               </div>
 
               {/* Username */}
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Username or Email
+                <label className="block text-xs font-medium text-slate-200 mb-1.5">
+                  Username or email
                 </label>
                 <div className="relative">
-                  <User className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <User className="w-4 h-4 text-teal-400/70 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
-                    placeholder="e.g. user@gmail.com or dev_explorer"
+                    placeholder="e.g. name@example.com or username"
                     value={newUsername}
                     onChange={(e) => setNewUsername(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full bg-[#0c1422] border border-teal-500/25 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 transition-colors"
                   />
                 </div>
               </div>
 
               {/* Password */}
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                <label className="block text-xs font-medium text-slate-200 mb-1.5">
                   Password <span className="text-rose-400">*</span>
                 </label>
                 <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <Lock className="w-4 h-4 text-teal-400/70 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
-                    type={showNewPassword ? "text" : "password"}
+                    type={showNewPassword ? 'text' : 'password'}
                     required
                     placeholder="Enter password"
                     value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-10 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                    onChange={(e) => {
+                      setNewPassword(e.target.value);
+                      if (formError) setFormError('');
+                    }}
+                    className="w-full bg-[#0c1422] border border-teal-500/25 rounded-xl pl-9 pr-10 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 font-mono transition-colors"
                   />
                   <button
                     type="button"
                     onClick={() => setShowNewPassword(!showNewPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                    aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-teal-300 cursor-pointer"
                   >
                     {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -872,108 +1003,22 @@ export default function App() {
               </div>
 
               {/* Actions */}
-              <div className="pt-3 flex items-center justify-end gap-3">
+              <div className="pt-3 flex items-center justify-end gap-2.5 border-t border-teal-500/20">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-slate-400 hover:text-slate-200 text-sm font-medium transition cursor-pointer"
+                  className="px-4 py-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 text-sm font-medium transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={savingItem}
-                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition shadow-lg shadow-indigo-600/25 cursor-pointer flex items-center gap-2 disabled:opacity-50"
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 text-white text-sm font-semibold transition-all shadow-md shadow-teal-500/25 cursor-pointer flex items-center gap-2 disabled:opacity-50"
                 >
                   {savingItem && <Loader2 className="w-4 h-4 animate-spin" />}
-                  <span>{editingItemId ? 'Update Entry' : 'Save Password'}</span>
+                  <span>{editingItemId ? 'Update Password' : 'Save Password'}</span>
                 </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Email Login / Signup */}
-      {isAuthModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-white">
-                {authMode === 'signup' ? 'Create Account' : 'Sign In'}
-              </h2>
-              <button 
-                onClick={() => setIsAuthModalOpen(false)}
-                className="text-slate-400 hover:text-slate-200 text-sm cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleEmailAuth} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">Email Address</label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="email"
-                    required
-                    placeholder="name@example.com"
-                    value={emailInput}
-                    onChange={(e) => setEmailInput(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">Password</label>
-                <div className="relative">
-                  <Key className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="password"
-                    required
-                    placeholder="••••••••"
-                    value={passwordInput}
-                    onChange={(e) => setPasswordInput(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={authSubmitting}
-                className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                {authSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
-                <span>{authMode === 'signup' ? 'Sign Up' : 'Sign In'}</span>
-              </button>
-
-              <div className="pt-2 text-center text-xs text-slate-400">
-                {authMode === 'signup' ? (
-                  <span>
-                    Already have an account?{' '}
-                    <button 
-                      type="button" 
-                      onClick={() => setAuthMode('login')} 
-                      className="text-indigo-400 hover:underline cursor-pointer"
-                    >
-                      Sign In
-                    </button>
-                  </span>
-                ) : (
-                  <span>
-                    Don't have an account?{' '}
-                    <button 
-                      type="button" 
-                      onClick={() => setAuthMode('signup')} 
-                      className="text-indigo-400 hover:underline cursor-pointer"
-                    >
-                      Sign Up
-                    </button>
-                  </span>
-                )}
               </div>
             </form>
           </div>
@@ -982,15 +1027,15 @@ export default function App() {
 
       {/* Modal: Delete Confirmation */}
       {deletingItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl text-center">
-            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mx-auto mb-4">
-              <Trash2 className="w-6 h-6" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="bg-[#101b2d] border border-rose-500/30 rounded-2xl w-full max-w-sm p-6 shadow-2xl text-center">
+            <div className="w-12 h-12 rounded-2xl bg-rose-950/60 border border-rose-500/40 text-rose-400 flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-5 h-5" />
             </div>
             <h3 className="text-base font-bold text-white mb-1.5">
               Delete {deletingItem.website}?
             </h3>
-            <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+            <p className="text-xs text-slate-300 mb-6 leading-relaxed">
               Are you sure you want to permanently delete this saved password? This action cannot be undone.
             </p>
 
@@ -998,14 +1043,14 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setDeletingItem(null)}
-                className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs transition border border-slate-700 cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-[#16243b] hover:bg-[#1c304f] text-slate-200 font-medium text-xs transition-colors border border-teal-500/20 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={confirmDelete}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs transition shadow-lg shadow-rose-600/25 cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-colors shadow-md shadow-rose-600/30 cursor-pointer"
               >
                 Yes, Delete
               </button>
@@ -1014,10 +1059,18 @@ export default function App() {
         </div>
       )}
 
-      {/* Footer */}
-      <footer className="border-t border-slate-800/80 bg-slate-950/80 py-6 text-center text-xs text-slate-500">
-        <p>KeyLocker &bull; AES-256-GCM Encrypted &bull; 100% Free Personal Safe</p>
-      </footer>
+      {/* Footer (shown on authenticated dashboard & auth page) */}
+      {(currentUser || authView === 'auth') && (
+        <footer
+          className={`relative z-10 py-5 text-center text-xs ${
+            currentUser
+              ? 'border-t border-teal-500/15 bg-[#0d1524]/80 backdrop-blur-sm text-teal-400/80'
+              : 'border-t border-white/[0.06] bg-[#05050a] text-slate-500'
+          }`}
+        >
+          <p>LoginKeep &bull; AES-256-GCM Encrypted &bull; Personal Password Vault</p>
+        </footer>
+      )}
     </div>
   );
 }

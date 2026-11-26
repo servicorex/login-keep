@@ -1,10 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   KeyRound, Shield, Search, Plus, Eye, EyeOff, Copy, Check, 
   Trash2, ExternalLink, RefreshCw, Lock, Sparkles, LogIn, 
   LogOut, Globe, User, CheckCircle2, AlertCircle, Laptop,
-  Image, Edit3, Mail, Key, Loader2, ShieldCheck, Download,
-  Unlock, HelpCircle
+  Image, Edit3, Mail, Key, Loader2
 } from 'lucide-react';
 import { 
   auth, 
@@ -15,8 +14,6 @@ import {
   logoutUser, 
   collection, 
   doc, 
-  getDoc,
-  setDoc,
   addDoc, 
   updateDoc, 
   deleteDoc, 
@@ -24,18 +21,9 @@ import {
   serverTimestamp, 
   onAuthStateChanged 
 } from './firebase';
-import { 
-  generateUserSalt,
-  generateRecoveryKey,
-  deriveMasterKey,
-  deriveKeyFromRecoveryCode,
-  computeKeyVerifier,
-  encryptFullPayload,
-  decryptFullPayload,
-  decryptLegacyPassword
-} from './crypto';
+import { encryptPassword, decryptPassword } from './crypto';
 
-// Helper to extract domain for Google Favicon API
+// Helper to extract or guess domain for Google Favicon API
 const getDomainFromWebsite = (website, customUrl = '') => {
   if (customUrl) {
     try {
@@ -82,28 +70,14 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  // Vault Security State (Master Password / Lock / Migration)
-  const [isVaultLocked, setIsVaultLocked] = useState(true);
-  const [activeVaultKey, setActiveVaultKey] = useState(null); // Held strictly in memory
-  const [userSecurityProfile, setUserSecurityProfile] = useState(null);
-  const [isSetupMasterModalOpen, setIsSetupMasterModalOpen] = useState(false);
-  const [isRecoveryModalOpen, setIsRecoveryModalOpen] = useState(false);
-
-  // Form states for Master Password
-  const [masterPasswordInput, setMasterPasswordInput] = useState('');
-  const [confirmMasterPasswordInput, setConfirmMasterPasswordInput] = useState('');
-  const [generatedRecoveryCode, setGeneratedRecoveryCode] = useState('');
-  const [recoveryCodeInput, setRecoveryCodeInput] = useState('');
-  const [masterSubmitting, setMasterSubmitting] = useState(false);
-
-  // Vault items
+  // Vault data state
   const [vaultItems, setVaultItems] = useState([]);
   const [dataLoading, setDataLoading] = useState(false);
   const [firestoreError, setFirestoreError] = useState(null);
 
-  // Email/Password sign-in modal
+  // Email/Password sign-in modal state
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authMode, setAuthMode] = useState('login');
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
@@ -125,80 +99,30 @@ export default function App() {
   const [newCustomIcon, setNewCustomIcon] = useState('');
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [newNotes, setNewNotes] = useState('');
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [iconMode, setIconMode] = useState('auto');
   const [savingItem, setSavingItem] = useState(false);
   const [notification, setNotification] = useState(null);
-
-  // Auto-lock inactivity timer (15 minutes)
-  const inactivityTimerRef = useRef(null);
 
   const triggerToast = (msg, type = 'success') => {
     setNotification({ msg, type });
     setTimeout(() => setNotification(null), 3500);
   };
 
-  const resetInactivityTimer = () => {
-    if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
-    if (!isVaultLocked && activeVaultKey) {
-      inactivityTimerRef.current = setTimeout(() => {
-        handleLockVault();
-        triggerToast('Vault locked due to 15 minutes of inactivity', 'info');
-      }, 15 * 60 * 1000);
-    }
-  };
-
+  // 1. Firebase Auth listener
   useEffect(() => {
-    const handleActivity = () => resetInactivityTimer();
-    window.addEventListener('mousemove', handleActivity);
-    window.addEventListener('keydown', handleActivity);
-    return () => {
-      window.removeEventListener('mousemove', handleActivity);
-      window.removeEventListener('keydown', handleActivity);
-      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
-    };
-  }, [isVaultLocked, activeVaultKey]);
-
-  // 1. Auth Listener
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
-      if (!user) {
-        setActiveVaultKey(null);
-        setIsVaultLocked(true);
-        setUserSecurityProfile(null);
-        setVaultItems([]);
-        setAuthLoading(false);
-        return;
-      }
-
-      // Check security profile in users/{uid}/security/keys
-      try {
-        const secDocRef = doc(db, 'users', user.uid, 'security', 'keys');
-        const secSnap = await getDoc(secDocRef);
-        if (secSnap.exists()) {
-          setUserSecurityProfile(secSnap.data());
-          setIsVaultLocked(true);
-        } else {
-          // No Master Password established yet -> Open setup
-          setUserSecurityProfile(null);
-          setIsSetupMasterModalOpen(true);
-          setGeneratedRecoveryCode(generateRecoveryKey());
-        }
-      } catch (err) {
-        console.error("Error loading security profile:", err);
-      } finally {
-        setAuthLoading(false);
-      }
+      setAuthLoading(false);
     });
-
     return () => unsubscribe();
   }, []);
 
-  // 2. Real-time Firestore Sync (Unlocked state only)
+  // 2. Real-time Firestore sync: Direct access once signed in
   useEffect(() => {
-    if (!currentUser || isVaultLocked || !activeVaultKey) {
+    if (!currentUser) {
+      setVaultItems([]);
+      setDataLoading(false);
       return;
     }
 
@@ -207,72 +131,37 @@ export default function App() {
     const vaultRef = collection(db, 'users', currentUser.uid, 'vault');
 
     const unsubscribe = onSnapshot(vaultRef, async (snapshot) => {
-      const rawDocs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const rawDocs = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data()
+      }));
 
-      // Decrypt items in parallel
-      const decrypted = await Promise.all(
-        rawDocs.map(async (docData) => {
-          // Check for v2 full payload encryption
-          if (docData.encPayload && docData.encPayload.startsWith('enc::v2::')) {
-            try {
-              const full = await decryptFullPayload(docData.encPayload, activeVaultKey);
-              return {
-                id: docData.id,
-                website: full.website,
-                url: full.url,
-                username: full.username,
-                password: full.password,
-                notes: full.notes || '',
-                customIcon: docData.customIcon || '',
-                createdAt: docData.createdAt,
-                updatedAt: docData.updatedAt
-              };
-            } catch (err) {
-              console.error("Decryption error for v2 item", docData.id, err);
-              return {
-                id: docData.id,
-                website: docData.website || 'Decryption Error',
-                username: docData.username || '',
-                password: '••••••••',
-                updatedAt: docData.updatedAt
-              };
-            }
-          }
-
-          // Legacy v1 item: Decrypt using backward-compatible fallback
+      // Decrypt credentials in parallel
+      const decryptedItems = await Promise.all(
+        rawDocs.map(async (item) => {
           try {
-            const plainPass = await decryptLegacyPassword(docData.password, currentUser.uid);
+            // Handle payload or legacy password field
+            const targetCipher = item.encPayload || item.password;
+            const plain = await decryptPassword(targetCipher, currentUser.uid);
             return {
-              id: docData.id,
-              website: docData.website,
-              url: docData.url,
-              username: docData.username,
-              password: plainPass,
-              notes: '',
-              customIcon: docData.customIcon || '',
-              isLegacyV1: true,
-              createdAt: docData.createdAt,
-              updatedAt: docData.updatedAt
+              ...item,
+              password: plain
             };
-          } catch {
-            return {
-              id: docData.id,
-              website: docData.website || 'Unknown',
-              username: docData.username || '',
-              password: '••••••••'
-            };
+          } catch (e) {
+            console.error("Decryption error for item", item.id, e);
+            return item;
           }
         })
       );
 
-      // Client-side sort by recency
-      decrypted.sort((a, b) => {
+      // Sort client-side by recency
+      decryptedItems.sort((a, b) => {
         const timeA = a.createdAt?.seconds || 0;
         const timeB = b.createdAt?.seconds || 0;
         return timeB - timeA;
       });
 
-      setVaultItems(decrypted);
+      setVaultItems(decryptedItems);
       setDataLoading(false);
     }, (error) => {
       console.error("Firestore error:", error);
@@ -281,277 +170,9 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [currentUser, isVaultLocked, activeVaultKey]);
+  }, [currentUser]);
 
-  // Handle Master Password Unlock
-  const handleUnlockVault = async (e) => {
-    e.preventDefault();
-    if (!masterPasswordInput) return;
-
-    setMasterSubmitting(true);
-    try {
-      const derivedKey = await deriveMasterKey(masterPasswordInput, userSecurityProfile.kdfSalt);
-      const computedVerifier = await computeKeyVerifier(derivedKey);
-
-      if (computedVerifier === userSecurityProfile.keyVerifier) {
-        setActiveVaultKey(derivedKey);
-        setIsVaultLocked(false);
-        setMasterPasswordInput('');
-        triggerToast('Vault unlocked securely');
-      } else {
-        triggerToast('Incorrect Master Password. Please try again.', 'error');
-      }
-    } catch (err) {
-      console.error("Unlock error:", err);
-      triggerToast('Failed to unlock vault.', 'error');
-    } finally {
-      setMasterSubmitting(false);
-    }
-  };
-
-  // Handle Emergency Recovery Unlock
-  const handleRecoveryUnlock = async (e) => {
-    e.preventDefault();
-    if (!recoveryCodeInput.trim()) return;
-
-    setMasterSubmitting(true);
-    try {
-      // Derive key using recovery code
-      const recKey = await deriveKeyFromRecoveryCode(recoveryCodeInput.trim(), userSecurityProfile.kdfSalt);
-      const computedVerifier = await computeKeyVerifier(recKey);
-
-      // Check if recovery verifier matches
-      if (computedVerifier === userSecurityProfile.recoveryVerifier) {
-        setActiveVaultKey(recKey);
-        setIsVaultLocked(false);
-        setIsRecoveryModalOpen(false);
-        setRecoveryCodeInput('');
-        triggerToast('Vault unlocked using Emergency Recovery Code! Please reset your Master Password.', 'success');
-      } else {
-        triggerToast('Invalid Recovery Code. Please double-check the characters.', 'error');
-      }
-    } catch (err) {
-      console.error("Recovery error:", err);
-      triggerToast('Recovery failed. Please check code format.', 'error');
-    } finally {
-      setMasterSubmitting(false);
-    }
-  };
-
-  // Lock Vault (Wipes keys from RAM)
-  const handleLockVault = () => {
-    setActiveVaultKey(null);
-    setIsVaultLocked(true);
-    setVaultItems([]);
-  };
-
-  // Setup Initial Master Password & Migrate Legacy Data Non-Destructively
-  const handleSetupMasterPassword = async (e) => {
-    e.preventDefault();
-    if (masterPasswordInput.length < 8) {
-      triggerToast('Master password must be at least 8 characters long.', 'error');
-      return;
-    }
-    if (masterPasswordInput !== confirmMasterPasswordInput) {
-      triggerToast('Master passwords do not match.', 'error');
-      return;
-    }
-
-    setMasterSubmitting(true);
-    try {
-      const salt = generateUserSalt();
-      const masterKey = await deriveMasterKey(masterPasswordInput, salt);
-      const keyVerifier = await computeKeyVerifier(masterKey);
-
-      // Generate recovery verifier
-      const recKey = await deriveKeyFromRecoveryCode(generatedRecoveryCode, salt);
-      const recoveryVerifier = await computeKeyVerifier(recKey);
-
-      // Save security profile in users/{uid}/security/keys
-      const secDocRef = doc(db, 'users', currentUser.uid, 'security', 'keys');
-      const profileData = {
-        kdfSalt: salt,
-        keyVerifier,
-        recoveryVerifier,
-        createdAt: serverTimestamp()
-      };
-      await setDoc(secDocRef, profileData);
-
-      setUserSecurityProfile(profileData);
-      setActiveVaultKey(masterKey);
-      setIsVaultLocked(false);
-      setIsSetupMasterModalOpen(false);
-
-      // Check and migrate legacy v1 items in place non-destructively
-      const vaultColRef = collection(db, 'users', currentUser.uid, 'vault');
-      const legacyDocs = await onSnapshot(vaultColRef, async (snap) => {
-        for (const d of snap.docs) {
-          const item = d.data();
-          if (!item.encPayload) {
-            // Decrypt legacy password
-            const plainPassword = await decryptLegacyPassword(item.password, currentUser.uid);
-            // Encrypt full payload under new master key
-            const encPayload = await encryptFullPayload({
-              website: item.website || '',
-              url: item.url || '',
-              username: item.username || '',
-              password: plainPassword,
-              notes: ''
-            }, masterKey);
-
-            // Update in-place keeping legacy backup
-            await updateDoc(doc(db, 'users', currentUser.uid, 'vault', d.id), {
-              schemaVersion: 2,
-              encPayload,
-              _legacyBackup: {
-                website: item.website || '',
-                username: item.username || '',
-                password: item.password || '',
-                url: item.url || ''
-              },
-              updatedAt: serverTimestamp()
-            });
-          }
-        }
-      });
-
-      triggerToast('Master Password established! Zero-Knowledge Vault Active.');
-    } catch (err) {
-      console.error("Master setup error:", err);
-      triggerToast(err.message || 'Failed to establish Master Password.', 'error');
-    } finally {
-      setMasterSubmitting(false);
-    }
-  };
-
-  // Save / Update Item
-  const handleSavePassword = async (e) => {
-    e.preventDefault();
-    if (!newWebsite.trim() || !newPassword.trim()) {
-      triggerToast('Please provide a website name and password.', 'error');
-      return;
-    }
-
-    if (!activeVaultKey) {
-      triggerToast('Vault is locked. Unlock to make changes.', 'error');
-      return;
-    }
-
-    const domain = getDomainFromWebsite(newWebsite, newUrl);
-    const finalUrl = newUrl.trim() 
-      ? (newUrl.startsWith('http') ? newUrl.trim() : `https://${newUrl.trim()}`)
-      : `https://${domain}`;
-
-    setSavingItem(true);
-    try {
-      const vaultRef = collection(db, 'users', currentUser.uid, 'vault');
-
-      // Encrypt full payload (website, url, username, password, notes)
-      const payloadObj = {
-        website: newWebsite.trim(),
-        url: finalUrl,
-        username: newUsername.trim() || '',
-        password: newPassword,
-        notes: newNotes.trim()
-      };
-
-      const encPayload = await encryptFullPayload(payloadObj, activeVaultKey);
-
-      if (editingItemId) {
-        // Update document
-        const itemDoc = doc(db, 'users', currentUser.uid, 'vault', editingItemId);
-        await updateDoc(itemDoc, {
-          schemaVersion: 2,
-          encPayload,
-          customIcon: iconMode === 'custom' ? newCustomIcon.trim() : '',
-          updatedAt: serverTimestamp()
-        });
-        triggerToast(`Updated ${newWebsite.trim()}`);
-      } else {
-        // Create new document
-        await addDoc(vaultRef, {
-          schemaVersion: 2,
-          encPayload,
-          customIcon: iconMode === 'custom' ? newCustomIcon.trim() : '',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-        triggerToast(`Encrypted & saved ${newWebsite.trim()}!`);
-      }
-      setIsAddModalOpen(false);
-    } catch (err) {
-      console.error("Save error:", err);
-      triggerToast(err.message || 'Failed to save credential.', 'error');
-    } finally {
-      setSavingItem(false);
-    }
-  };
-
-  // Delete Item
-  const handleDeleteItem = async (id, name) => {
-    if (!currentUser) return;
-    try {
-      const itemDoc = doc(db, 'users', currentUser.uid, 'vault', id);
-      await deleteDoc(itemDoc);
-      triggerToast(`Deleted ${name} entry`);
-    } catch (err) {
-      triggerToast(err.message || 'Failed to delete entry.', 'error');
-    }
-  };
-
-  // Clipboard copy with 30s auto-purge
-  const copyToClipboard = (text, id, label = 'Password') => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(`${id}-${label}`);
-    triggerToast(`${label} copied to clipboard (auto-clears in 30s)`);
-
-    // Reset button icon after 2s
-    setTimeout(() => setCopiedId(null), 2000);
-
-    // Auto-purge clipboard after 30 seconds for security
-    setTimeout(() => {
-      navigator.clipboard.readText().then(current => {
-        if (current === text) {
-          navigator.clipboard.writeText('');
-        }
-      }).catch(() => {});
-    }, 30000);
-  };
-
-  const generateStrongPassword = () => {
-    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+~`|}{[]:;?><,./-=';
-    let pass = '';
-    for (let i = 0; i < 16; i++) {
-      pass += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    setNewPassword(pass);
-    triggerToast('Strong 16-character password generated!');
-  };
-
-  const openCreateModal = () => {
-    setEditingItemId(null);
-    setNewWebsite('');
-    setNewUrl('');
-    setNewCustomIcon('');
-    setNewUsername('');
-    setNewPassword('');
-    setNewNotes('');
-    setIconMode('auto');
-    setIsAddModalOpen(true);
-  };
-
-  const openEditModal = (item) => {
-    setEditingItemId(item.id);
-    setNewWebsite(item.website);
-    setNewUrl(item.url || '');
-    setNewCustomIcon(item.customIcon || '');
-    setNewUsername(item.username);
-    setNewPassword(item.password);
-    setNewNotes(item.notes || '');
-    setIconMode(item.customIcon ? 'custom' : 'auto');
-    setIsAddModalOpen(true);
-  };
-
+  // Auth Handlers
   const handleGoogleSignIn = async () => {
     try {
       setAuthSubmitting(true);
@@ -593,7 +214,6 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      handleLockVault();
       await logoutUser();
       triggerToast('Logged out securely');
     } catch (err) {
@@ -606,6 +226,125 @@ export default function App() {
       ...prev,
       [id]: !prev[id]
     }));
+  };
+
+  // 1-Click Clipboard copy with 30-second auto-clear
+  const copyToClipboard = (text, id, label = 'Password') => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(`${id}-${label}`);
+    triggerToast(`${label} copied! (clears in 30s)`);
+
+    setTimeout(() => setCopiedId(null), 2000);
+
+    // Auto-purge clipboard after 30 seconds
+    setTimeout(() => {
+      navigator.clipboard.readText().then(current => {
+        if (current === text) {
+          navigator.clipboard.writeText('');
+        }
+      }).catch(() => {});
+    }, 30000);
+  };
+
+  const generateStrongPassword = () => {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+~`|}{[]:;?><,./-=';
+    let pass = '';
+    for (let i = 0; i < 16; i++) {
+      pass += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setNewPassword(pass);
+    triggerToast('Strong 16-character password generated!');
+  };
+
+  const openCreateModal = () => {
+    setEditingItemId(null);
+    setNewWebsite('');
+    setNewUrl('');
+    setNewCustomIcon('');
+    setNewUsername(''); // Never prefilled
+    setNewPassword('');
+    setIconMode('auto');
+    setIsAddModalOpen(true);
+  };
+
+  const openEditModal = (item) => {
+    setEditingItemId(item.id);
+    setNewWebsite(item.website);
+    setNewUrl(item.url || '');
+    setNewCustomIcon(item.customIcon || '');
+    setNewUsername(item.username || '');
+    setNewPassword(item.password);
+    setIconMode(item.customIcon ? 'custom' : 'auto');
+    setIsAddModalOpen(true);
+  };
+
+  const handleSavePassword = async (e) => {
+    e.preventDefault();
+    if (!newWebsite.trim() || !newPassword.trim()) {
+      triggerToast('Please provide a website name and password.', 'error');
+      return;
+    }
+
+    if (!currentUser) {
+      triggerToast('Please sign in to save credentials.', 'error');
+      return;
+    }
+
+    const domain = getDomainFromWebsite(newWebsite, newUrl);
+    const finalUrl = newUrl.trim() 
+      ? (newUrl.startsWith('http') ? newUrl.trim() : `https://${newUrl.trim()}`)
+      : `https://${domain}`;
+
+    setSavingItem(true);
+    try {
+      const vaultRef = collection(db, 'users', currentUser.uid, 'vault');
+
+      // Encrypt password using AES-256-GCM
+      const cipherPassword = await encryptPassword(newPassword, currentUser.uid);
+
+      if (editingItemId) {
+        // Update document
+        const itemDoc = doc(db, 'users', currentUser.uid, 'vault', editingItemId);
+        await updateDoc(itemDoc, {
+          website: newWebsite.trim(),
+          url: finalUrl,
+          customIcon: iconMode === 'custom' ? newCustomIcon.trim() : '',
+          username: newUsername.trim() || '',
+          password: cipherPassword,
+          updatedAt: serverTimestamp()
+        });
+        triggerToast(`Updated ${newWebsite.trim()}`);
+      } else {
+        // Create new document
+        await addDoc(vaultRef, {
+          website: newWebsite.trim(),
+          url: finalUrl,
+          customIcon: iconMode === 'custom' ? newCustomIcon.trim() : '',
+          username: newUsername.trim() || '',
+          password: cipherPassword,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+        triggerToast(`Saved ${newWebsite.trim()} to your vault!`);
+      }
+      setIsAddModalOpen(false);
+    } catch (err) {
+      console.error("Save error:", err);
+      triggerToast(err.message || 'Failed to save password.', 'error');
+    } finally {
+      setSavingItem(false);
+    }
+  };
+
+  const handleDeleteItem = async (id, name) => {
+    if (!currentUser) return;
+    try {
+      const itemDoc = doc(db, 'users', currentUser.uid, 'vault', id);
+      await deleteDoc(itemDoc);
+      triggerToast(`Deleted ${name} entry`);
+    } catch (err) {
+      triggerToast(err.message || 'Failed to delete entry.', 'error');
+    }
   };
 
   const filteredItems = vaultItems.filter(item => 
@@ -622,7 +361,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400 gap-3">
         <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
-        <span className="text-sm font-medium">Securing KeyLocker connection...</span>
+        <span className="text-sm font-medium">Opening KeyLocker...</span>
       </div>
     );
   }
@@ -634,7 +373,7 @@ export default function App() {
         <div className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-2xl backdrop-blur-md border text-sm font-medium transition-all duration-300 animate-in fade-in slide-in-from-top-4 ${
           notification.type === 'error' 
             ? 'bg-rose-950/80 border-rose-500/50 text-rose-200' 
-            : (notification.type === 'info' ? 'bg-indigo-950/80 border-indigo-500/50 text-indigo-200' : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-200')
+            : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-200'
         }`}>
           {notification.type === 'error' ? <AlertCircle className="w-4 h-4 text-rose-400" /> : <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
           <span>{notification.msg}</span>
@@ -653,9 +392,8 @@ export default function App() {
                 <span className="font-bold text-lg tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
                   KeyLocker
                 </span>
-                <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
-                  <ShieldCheck className="w-3 h-3" />
-                  Zero-Knowledge
+                <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                  Personal Vault
                 </span>
               </div>
             </div>
@@ -663,57 +401,38 @@ export default function App() {
 
           <div className="flex items-center gap-3">
             {currentUser ? (
-              <div className="flex items-center gap-2.5">
-                {/* Vault Lock Status Indicator */}
-                {!isVaultLocked ? (
-                  <button
-                    onClick={handleLockVault}
-                    title="Lock Vault Now"
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/60 text-xs font-medium transition cursor-pointer"
-                  >
-                    <Lock className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>Lock Vault</span>
-                  </button>
+              <div className="flex items-center gap-3 bg-slate-800/50 border border-slate-700/60 rounded-full py-1.5 pl-2 pr-3">
+                {currentUser.photoURL && !avatarError ? (
+                  <img 
+                    src={currentUser.photoURL} 
+                    alt={currentUser.displayName || currentUser.email} 
+                    referrerPolicy="no-referrer"
+                    crossOrigin="anonymous"
+                    className="w-7 h-7 rounded-full ring-2 ring-indigo-500/50 object-cover"
+                    onError={() => setAvatarError(true)}
+                  />
                 ) : (
-                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 text-xs font-medium">
-                    <Lock className="w-3.5 h-3.5" />
-                    <span>Locked</span>
-                  </span>
-                )}
-
-                <div className="flex items-center gap-3 bg-slate-800/50 border border-slate-700/60 rounded-full py-1.5 pl-2 pr-3">
-                  {currentUser.photoURL && !avatarError ? (
-                    <img 
-                      src={currentUser.photoURL} 
-                      alt={currentUser.displayName || currentUser.email} 
-                      referrerPolicy="no-referrer"
-                      crossOrigin="anonymous"
-                      className="w-7 h-7 rounded-full ring-2 ring-indigo-500/50 object-cover"
-                      onError={() => setAvatarError(true)}
-                    />
-                  ) : (
-                    <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 text-white font-bold text-xs flex items-center justify-center shadow-inner ring-2 ring-indigo-500/30">
-                      {currentUser.displayName 
-                        ? currentUser.displayName.charAt(0).toUpperCase() 
-                        : (currentUser.email ? currentUser.email.charAt(0).toUpperCase() : 'U')}
-                    </div>
-                  )}
-                  <div className="hidden sm:block text-left text-xs">
-                    <p className="font-medium text-slate-200 leading-tight">
-                      {currentUser.displayName || currentUser.email.split('@')[0]}
-                    </p>
-                    <p className="text-slate-400 text-[11px] leading-tight truncate max-w-[140px]">
-                      {currentUser.email}
-                    </p>
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 text-white font-bold text-xs flex items-center justify-center shadow-inner ring-2 ring-indigo-500/30">
+                    {currentUser.displayName 
+                      ? currentUser.displayName.charAt(0).toUpperCase() 
+                      : (currentUser.email ? currentUser.email.charAt(0).toUpperCase() : 'U')}
                   </div>
-                  <button 
-                    onClick={handleLogout}
-                    title="Log out"
-                    className="p-1 hover:bg-slate-700/70 rounded-full text-slate-400 hover:text-rose-400 transition ml-1 cursor-pointer"
-                  >
-                    <LogOut className="w-4 h-4" />
-                  </button>
+                )}
+                <div className="hidden sm:block text-left text-xs">
+                  <p className="font-medium text-slate-200 leading-tight">
+                    {currentUser.displayName || currentUser.email.split('@')[0]}
+                  </p>
+                  <p className="text-slate-400 text-[11px] leading-tight truncate max-w-[140px]">
+                    {currentUser.email}
+                  </p>
                 </div>
+                <button 
+                  onClick={handleLogout}
+                  title="Log out"
+                  className="p-1 hover:bg-slate-700/70 rounded-full text-slate-400 hover:text-rose-400 transition ml-1 cursor-pointer"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
               </div>
             ) : (
               <div className="flex items-center gap-2">
@@ -753,13 +472,13 @@ export default function App() {
               <Shield className="w-8 h-8" />
             </div>
             <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-white mb-4">
-              Your Personal, Zero-Knowledge <br />
+              Your Personal, Simple <br />
               <span className="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
                 Password Safe
               </span>
             </h1>
             <p className="text-slate-400 text-base sm:text-lg mb-8 leading-relaxed">
-              Completely free, client-side encrypted with AES-256-GCM. Your master password never touches the server. Even if the database is leaked, your passwords remain 100% unbreakable.
+              Never reset a forgotten password again. Sign in directly with Google or Email. Passwords are saved with AES-256-GCM encryption, isolated strictly to your account.
             </p>
 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -786,79 +505,30 @@ export default function App() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-16 text-left">
               <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
                 <Lock className="w-5 h-5 text-indigo-400 mb-2" />
-                <h3 className="font-semibold text-slate-200 text-sm">True Zero-Knowledge</h3>
-                <p className="text-xs text-slate-400 mt-1">PBKDF2 with 600,000 iterations. Master passwords never leave your browser.</p>
+                <h3 className="font-semibold text-slate-200 text-sm">AES-256-GCM Encrypted</h3>
+                <p className="text-xs text-slate-400 mt-1">Passwords are encrypted with fresh random 96-bit nonces before saving.</p>
               </div>
               <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-                <ShieldCheck className="w-5 h-5 text-purple-400 mb-2" />
-                <h3 className="font-semibold text-slate-200 text-sm">Full-Payload Encryption</h3>
-                <p className="text-xs text-slate-400 mt-1">Websites, usernames, passwords and URLs are all encrypted into a unified cipher.</p>
+                <Sparkles className="w-5 h-5 text-purple-400 mb-2" />
+                <h3 className="font-semibold text-slate-200 text-sm">Automatic Favicons</h3>
+                <p className="text-xs text-slate-400 mt-1">Official high-res logos fetch automatically as you type website names.</p>
               </div>
               <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-                <Sparkles className="w-5 h-5 text-emerald-400 mb-2" />
-                <h3 className="font-semibold text-slate-200 text-sm">Auto-Lock & Purge</h3>
-                <p className="text-xs text-slate-400 mt-1">Vault locks automatically on inactivity; clipboards purge automatically in 30s.</p>
+                <Laptop className="w-5 h-5 text-emerald-400 mb-2" />
+                <h3 className="font-semibold text-slate-200 text-sm">Real-Time Cloud Sync</h3>
+                <p className="text-xs text-slate-400 mt-1">Changes sync instantly across your phone, tablet, and PC.</p>
               </div>
-            </div>
-          </div>
-        ) : isVaultLocked ? (
-          /* Vault Locked Screen */
-          <div className="max-w-md mx-auto my-12 bg-slate-900/80 border border-slate-800 rounded-3xl p-8 shadow-2xl backdrop-blur-xl text-center animate-in fade-in">
-            <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto mb-5 shadow-inner">
-              <Lock className="w-7 h-7" />
-            </div>
-            <h2 className="text-xl font-bold text-white mb-1">Vault is Locked</h2>
-            <p className="text-xs text-slate-400 mb-6">
-              Enter your Master Password to decrypt your credentials.
-            </p>
-
-            <form onSubmit={handleUnlockVault} className="space-y-4">
-              <div className="relative text-left">
-                <Key className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="password"
-                  required
-                  placeholder="Master Password"
-                  value={masterPasswordInput}
-                  onChange={(e) => setMasterPasswordInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={masterSubmitting}
-                className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                {masterSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />}
-                <span>Unlock Vault</span>
-              </button>
-            </form>
-
-            <div className="mt-5 pt-4 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-500">
-              <button
-                onClick={() => setIsRecoveryModalOpen(true)}
-                className="text-indigo-400 hover:underline cursor-pointer"
-              >
-                Forgot Master Password?
-              </button>
-              <button
-                onClick={handleLogout}
-                className="text-slate-400 hover:text-rose-400 cursor-pointer"
-              >
-                Sign out
-              </button>
             </div>
           </div>
         ) : (
-          /* Unlocked Dashboard */
+          /* Authenticated Direct Vault Dashboard */
           <div>
             {/* Top Toolbar */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 mb-8">
               <div>
                 <h1 className="text-2xl font-bold text-white tracking-tight">Your Password Locker</h1>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Decrypted in Client RAM &bull; <span className="text-indigo-400 font-medium">{currentUser.email}</span>
+                  Authenticated as <span className="text-indigo-400 font-medium">{currentUser.email}</span>
                 </p>
               </div>
 
@@ -895,16 +565,16 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2 text-xs text-slate-400 bg-slate-900/50 border border-slate-800 px-4 py-2.5 rounded-xl whitespace-nowrap">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span>{filteredItems.length} secured passwords</span>
+                <Shield className="w-4 h-4 text-emerald-400" />
+                <span>{filteredItems.length} saved passwords</span>
               </div>
             </div>
 
-            {/* Content State: Loading, Empty, or Cards */}
+            {/* Content State */}
             {dataLoading ? (
               <div className="flex flex-col items-center justify-center py-20 text-slate-500 gap-2">
                 <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
-                <span className="text-xs">Decrypting your vault in memory...</span>
+                <span className="text-xs">Loading your saved credentials...</span>
               </div>
             ) : filteredItems.length === 0 ? (
               <div className="text-center py-16 bg-slate-900/40 border border-slate-800/80 rounded-2xl">
@@ -913,7 +583,7 @@ export default function App() {
                 </div>
                 <h3 className="text-slate-200 font-semibold mb-1">No passwords in your vault</h3>
                 <p className="text-slate-500 text-xs max-w-sm mx-auto mb-4">
-                  {searchQuery ? `No credentials match "${searchQuery}"` : "Add your first website password. It is encrypted entirely in your browser before saving."}
+                  {searchQuery ? `No credentials match "${searchQuery}"` : "Add your first website password. It is encrypted and saved directly to your account."}
                 </p>
                 <button
                   onClick={openCreateModal}
@@ -971,7 +641,7 @@ export default function App() {
                                 )}
                               </h3>
                               <span className="text-[11px] text-slate-500">
-                                {item.isLegacyV1 ? 'v1 (Legacy)' : 'AES-GCM (v2)'}
+                                {item.updatedAt?.toDate ? item.updatedAt.toDate().toLocaleDateString() : 'Saved'}
                               </span>
                             </div>
                           </div>
@@ -1045,133 +715,6 @@ export default function App() {
           </div>
         )}
       </main>
-
-      {/* Modal: Setup Initial Master Password */}
-      {isSetupMasterModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-lg p-7 shadow-2xl">
-            <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mb-4">
-              <ShieldCheck className="w-6 h-6" />
-            </div>
-            <h2 className="text-xl font-bold text-white mb-1">Set Your Master Password</h2>
-            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
-              This password derives your zero-knowledge AES-256 encryption key. <strong>It is never sent to Firebase</strong>, so we cannot recover it for you.
-            </p>
-
-            <form onSubmit={handleSetupMasterPassword} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Create Master Password <span className="text-rose-400">*</span>
-                </label>
-                <input
-                  type="password"
-                  required
-                  placeholder="At least 8 characters"
-                  value={masterPasswordInput}
-                  onChange={(e) => setMasterPasswordInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Confirm Master Password <span className="text-rose-400">*</span>
-                </label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Repeat master password"
-                  value={confirmMasterPasswordInput}
-                  onChange={(e) => setConfirmMasterPasswordInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-
-              {/* Emergency Recovery Key Box */}
-              <div className="bg-slate-950/80 border border-indigo-500/30 rounded-2xl p-4 mt-2">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-indigo-300 flex items-center gap-1.5">
-                    <HelpCircle className="w-4 h-4 text-indigo-400" />
-                    Emergency Recovery Key
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard.writeText(generatedRecoveryCode);
-                      triggerToast('Recovery Code copied to clipboard!');
-                    }}
-                    className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer font-medium"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                    Copy
-                  </button>
-                </div>
-                <p className="text-[11px] text-slate-400 mb-2 leading-relaxed">
-                  Save this key in a safe place. If you ever forget your master password, this is the only way to recover your vault:
-                </p>
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5 font-mono text-center text-xs text-emerald-400 font-bold tracking-wider select-all">
-                  {generatedRecoveryCode}
-                </div>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={masterSubmitting}
-                  className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                >
-                  {masterSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-                  <span>Save Master Password & Activate Vault</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Recovery Key Unlock */}
-      {isRecoveryModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-indigo-400" />
-                Emergency Vault Recovery
-              </h2>
-              <button 
-                onClick={() => setIsRecoveryModalOpen(false)}
-                className="text-slate-400 hover:text-slate-200 text-sm cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
-              Enter your 24-character Emergency Recovery Key (e.g. <code>A7B9-KD24-...</code>) to decrypt your vault.
-            </p>
-
-            <form onSubmit={handleRecoveryUnlock} className="space-y-4">
-              <input
-                type="text"
-                required
-                placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
-                value={recoveryCodeInput}
-                onChange={(e) => setRecoveryCodeInput(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-sm text-center font-mono text-emerald-400 font-bold tracking-wider focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase"
-              />
-
-              <button
-                type="submit"
-                disabled={masterSubmitting}
-                className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm transition shadow-lg shadow-emerald-600/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                {masterSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />}
-                <span>Recover & Unlock Vault</span>
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* Modal: Add or Edit Password */}
       {isAddModalOpen && (
@@ -1299,7 +842,7 @@ export default function App() {
                   <User className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
-                    placeholder="e.g. user@gmail.com or username"
+                    placeholder="e.g. user@gmail.com or dev_explorer"
                     value={newUsername}
                     onChange={(e) => setNewUsername(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -1453,7 +996,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-slate-950/80 py-6 text-center text-xs text-slate-500">
-        <p>KeyLocker &bull; Zero-Knowledge AES-256-GCM Vault &bull; 100% Free & Open</p>
+        <p>KeyLocker &bull; AES-256-GCM Encrypted &bull; 100% Free Personal Safe</p>
       </footer>
     </div>
   );

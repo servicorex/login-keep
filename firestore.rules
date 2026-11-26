@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Vault collection: Only the user can read/write their own encrypted vault
+    match /users/{userId}/vault/{docId} {
+      allow read, write, delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // 2. Security profile: Stores user's random KDF salt and keyVerifier
+    match /users/{userId}/security/{docId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

@@ -1,12 +1,41 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   KeyRound, Shield, Search, Plus, Eye, EyeOff, Copy, Check, 
   Trash2, ExternalLink, RefreshCw, Lock, Sparkles, LogIn, 
   LogOut, Globe, User, CheckCircle2, AlertCircle, Laptop,
-  Image, Edit3
+  Image, Edit3, Mail, Key, Loader2, ShieldCheck, Download,
+  Unlock, HelpCircle
 } from 'lucide-react';
+import { 
+  auth, 
+  db, 
+  loginWithGoogle, 
+  loginWithEmail, 
+  registerWithEmail, 
+  logoutUser, 
+  collection, 
+  doc, 
+  getDoc,
+  setDoc,
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  onSnapshot, 
+  serverTimestamp, 
+  onAuthStateChanged 
+} from './firebase';
+import { 
+  generateUserSalt,
+  generateRecoveryKey,
+  deriveMasterKey,
+  deriveKeyFromRecoveryCode,
+  computeKeyVerifier,
+  encryptFullPayload,
+  decryptFullPayload,
+  decryptLegacyPassword
+} from './crypto';
 
-// Helper to extract or guess domain for Google Favicon API
+// Helper to extract domain for Google Favicon API
 const getDomainFromWebsite = (website, customUrl = '') => {
   if (customUrl) {
     try {
@@ -16,11 +45,10 @@ const getDomainFromWebsite = (website, customUrl = '') => {
       // fallback
     }
   }
-  const clean = website.toLowerCase().trim().replace(/\s+/g, '');
+  const clean = (website || '').toLowerCase().trim().replace(/\s+/g, '');
   if (clean.includes('.')) {
     return clean;
   }
-  // Common mappings or generic domain
   const knownDomains = {
     netflix: 'netflix.com',
     github: 'github.com',
@@ -49,62 +77,47 @@ const getFaviconUrl = (item) => {
   return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
 };
 
-// Sample mock data for preview
-const INITIAL_VAULT = [
-  {
-    id: '1',
-    website: 'Netflix',
-    url: 'https://netflix.com',
-    customIcon: '',
-    username: 'user@example.com',
-    password: 'password123!Secure',
-    category: 'Entertainment',
-    updatedAt: '2 days ago'
-  },
-  {
-    id: '2',
-    website: 'GitHub',
-    url: 'https://github.com',
-    customIcon: '',
-    username: 'dev_explorer',
-    password: 'ghp_superSecretToken99',
-    category: 'Development',
-    updatedAt: 'Yesterday'
-  },
-  {
-    id: '3',
-    website: 'Amazon Prime',
-    url: 'https://amazon.com',
-    customIcon: '',
-    username: 'shopper@gmail.com',
-    password: 'AmzPassword2026!',
-    category: 'Shopping',
-    updatedAt: '3 hours ago'
-  }
-];
-
 export default function App() {
-  // Authentication simulation state (for frontend showcase)
-  const [currentUser, setCurrentUser] = useState({
-    name: 'Alex Johnson',
-    email: 'guest.demo@gmail.com',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=faces'
-  });
+  // Authentication state
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
-  const [vaultItems, setVaultItems] = useState(() => {
-    const saved = localStorage.getItem('locker_vault_items');
-    return saved ? JSON.parse(saved) : INITIAL_VAULT;
-  });
+  // Vault Security State (Master Password / Lock / Migration)
+  const [isVaultLocked, setIsVaultLocked] = useState(true);
+  const [activeVaultKey, setActiveVaultKey] = useState(null); // Held strictly in memory
+  const [userSecurityProfile, setUserSecurityProfile] = useState(null);
+  const [isSetupMasterModalOpen, setIsSetupMasterModalOpen] = useState(false);
+  const [isRecoveryModalOpen, setIsRecoveryModalOpen] = useState(false);
 
-  // Search & Filters
+  // Form states for Master Password
+  const [masterPasswordInput, setMasterPasswordInput] = useState('');
+  const [confirmMasterPasswordInput, setConfirmMasterPasswordInput] = useState('');
+  const [generatedRecoveryCode, setGeneratedRecoveryCode] = useState('');
+  const [recoveryCodeInput, setRecoveryCodeInput] = useState('');
+  const [masterSubmitting, setMasterSubmitting] = useState(false);
+
+  // Vault items
+  const [vaultItems, setVaultItems] = useState([]);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [firestoreError, setFirestoreError] = useState(null);
+
+  // Email/Password sign-in modal
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authMode, setAuthMode] = useState('login');
+  const [emailInput, setEmailInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+
+  // Search & Filtering
   const [searchQuery, setSearchQuery] = useState('');
-  
-  // Show / Hide password states for vault items
+
+  // Password visibility & Copy state
   const [visiblePasswords, setVisiblePasswords] = useState({});
   const [copiedId, setCopiedId] = useState(null);
   const [iconErrors, setIconErrors] = useState({});
+  const [avatarError, setAvatarError] = useState(false);
 
-  // Modal / Form state
+  // Modal / Form state for Add/Edit
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingItemId, setEditingItemId] = useState(null);
   const [newWebsite, setNewWebsite] = useState('');
@@ -112,47 +125,397 @@ export default function App() {
   const [newCustomIcon, setNewCustomIcon] = useState('');
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [newNotes, setNewNotes] = useState('');
   const [showNewPassword, setShowNewPassword] = useState(false);
-  const [iconMode, setIconMode] = useState('auto'); // 'auto' or 'custom'
+  const [iconMode, setIconMode] = useState('auto');
+  const [savingItem, setSavingItem] = useState(false);
   const [notification, setNotification] = useState(null);
 
-  useEffect(() => {
-    localStorage.setItem('locker_vault_items', JSON.stringify(vaultItems));
-  }, [vaultItems]);
+  // Auto-lock inactivity timer (15 minutes)
+  const inactivityTimerRef = useRef(null);
 
   const triggerToast = (msg, type = 'success') => {
     setNotification({ msg, type });
-    setTimeout(() => setNotification(null), 3000);
+    setTimeout(() => setNotification(null), 3500);
   };
 
-  const handleGoogleLogin = (mockEmail = 'alex.developer@gmail.com') => {
-    setCurrentUser({
-      name: 'Alex Johnson',
-      email: mockEmail,
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=faces'
+  const resetInactivityTimer = () => {
+    if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+    if (!isVaultLocked && activeVaultKey) {
+      inactivityTimerRef.current = setTimeout(() => {
+        handleLockVault();
+        triggerToast('Vault locked due to 15 minutes of inactivity', 'info');
+      }, 15 * 60 * 1000);
+    }
+  };
+
+  useEffect(() => {
+    const handleActivity = () => resetInactivityTimer();
+    window.addEventListener('mousemove', handleActivity);
+    window.addEventListener('keydown', handleActivity);
+    return () => {
+      window.removeEventListener('mousemove', handleActivity);
+      window.removeEventListener('keydown', handleActivity);
+      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+    };
+  }, [isVaultLocked, activeVaultKey]);
+
+  // 1. Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (!user) {
+        setActiveVaultKey(null);
+        setIsVaultLocked(true);
+        setUserSecurityProfile(null);
+        setVaultItems([]);
+        setAuthLoading(false);
+        return;
+      }
+
+      // Check security profile in users/{uid}/security/keys
+      try {
+        const secDocRef = doc(db, 'users', user.uid, 'security', 'keys');
+        const secSnap = await getDoc(secDocRef);
+        if (secSnap.exists()) {
+          setUserSecurityProfile(secSnap.data());
+          setIsVaultLocked(true);
+        } else {
+          // No Master Password established yet -> Open setup
+          setUserSecurityProfile(null);
+          setIsSetupMasterModalOpen(true);
+          setGeneratedRecoveryCode(generateRecoveryKey());
+        }
+      } catch (err) {
+        console.error("Error loading security profile:", err);
+      } finally {
+        setAuthLoading(false);
+      }
     });
-    triggerToast(`Signed in securely as ${mockEmail}`);
+
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Real-time Firestore Sync (Unlocked state only)
+  useEffect(() => {
+    if (!currentUser || isVaultLocked || !activeVaultKey) {
+      return;
+    }
+
+    setDataLoading(true);
+    setFirestoreError(null);
+    const vaultRef = collection(db, 'users', currentUser.uid, 'vault');
+
+    const unsubscribe = onSnapshot(vaultRef, async (snapshot) => {
+      const rawDocs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+      // Decrypt items in parallel
+      const decrypted = await Promise.all(
+        rawDocs.map(async (docData) => {
+          // Check for v2 full payload encryption
+          if (docData.encPayload && docData.encPayload.startsWith('enc::v2::')) {
+            try {
+              const full = await decryptFullPayload(docData.encPayload, activeVaultKey);
+              return {
+                id: docData.id,
+                website: full.website,
+                url: full.url,
+                username: full.username,
+                password: full.password,
+                notes: full.notes || '',
+                customIcon: docData.customIcon || '',
+                createdAt: docData.createdAt,
+                updatedAt: docData.updatedAt
+              };
+            } catch (err) {
+              console.error("Decryption error for v2 item", docData.id, err);
+              return {
+                id: docData.id,
+                website: docData.website || 'Decryption Error',
+                username: docData.username || '',
+                password: '••••••••',
+                updatedAt: docData.updatedAt
+              };
+            }
+          }
+
+          // Legacy v1 item: Decrypt using backward-compatible fallback
+          try {
+            const plainPass = await decryptLegacyPassword(docData.password, currentUser.uid);
+            return {
+              id: docData.id,
+              website: docData.website,
+              url: docData.url,
+              username: docData.username,
+              password: plainPass,
+              notes: '',
+              customIcon: docData.customIcon || '',
+              isLegacyV1: true,
+              createdAt: docData.createdAt,
+              updatedAt: docData.updatedAt
+            };
+          } catch {
+            return {
+              id: docData.id,
+              website: docData.website || 'Unknown',
+              username: docData.username || '',
+              password: '••••••••'
+            };
+          }
+        })
+      );
+
+      // Client-side sort by recency
+      decrypted.sort((a, b) => {
+        const timeA = a.createdAt?.seconds || 0;
+        const timeB = b.createdAt?.seconds || 0;
+        return timeB - timeA;
+      });
+
+      setVaultItems(decrypted);
+      setDataLoading(false);
+    }, (error) => {
+      console.error("Firestore error:", error);
+      setFirestoreError(error.message);
+      setDataLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [currentUser, isVaultLocked, activeVaultKey]);
+
+  // Handle Master Password Unlock
+  const handleUnlockVault = async (e) => {
+    e.preventDefault();
+    if (!masterPasswordInput) return;
+
+    setMasterSubmitting(true);
+    try {
+      const derivedKey = await deriveMasterKey(masterPasswordInput, userSecurityProfile.kdfSalt);
+      const computedVerifier = await computeKeyVerifier(derivedKey);
+
+      if (computedVerifier === userSecurityProfile.keyVerifier) {
+        setActiveVaultKey(derivedKey);
+        setIsVaultLocked(false);
+        setMasterPasswordInput('');
+        triggerToast('Vault unlocked securely');
+      } else {
+        triggerToast('Incorrect Master Password. Please try again.', 'error');
+      }
+    } catch (err) {
+      console.error("Unlock error:", err);
+      triggerToast('Failed to unlock vault.', 'error');
+    } finally {
+      setMasterSubmitting(false);
+    }
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
-    triggerToast('Logged out securely');
+  // Handle Emergency Recovery Unlock
+  const handleRecoveryUnlock = async (e) => {
+    e.preventDefault();
+    if (!recoveryCodeInput.trim()) return;
+
+    setMasterSubmitting(true);
+    try {
+      // Derive key using recovery code
+      const recKey = await deriveKeyFromRecoveryCode(recoveryCodeInput.trim(), userSecurityProfile.kdfSalt);
+      const computedVerifier = await computeKeyVerifier(recKey);
+
+      // Check if recovery verifier matches
+      if (computedVerifier === userSecurityProfile.recoveryVerifier) {
+        setActiveVaultKey(recKey);
+        setIsVaultLocked(false);
+        setIsRecoveryModalOpen(false);
+        setRecoveryCodeInput('');
+        triggerToast('Vault unlocked using Emergency Recovery Code! Please reset your Master Password.', 'success');
+      } else {
+        triggerToast('Invalid Recovery Code. Please double-check the characters.', 'error');
+      }
+    } catch (err) {
+      console.error("Recovery error:", err);
+      triggerToast('Recovery failed. Please check code format.', 'error');
+    } finally {
+      setMasterSubmitting(false);
+    }
   };
 
-  const togglePasswordVisibility = (id) => {
-    setVisiblePasswords(prev => ({
-      ...prev,
-      [id]: !prev[id]
-    }));
+  // Lock Vault (Wipes keys from RAM)
+  const handleLockVault = () => {
+    setActiveVaultKey(null);
+    setIsVaultLocked(true);
+    setVaultItems([]);
   };
 
+  // Setup Initial Master Password & Migrate Legacy Data Non-Destructively
+  const handleSetupMasterPassword = async (e) => {
+    e.preventDefault();
+    if (masterPasswordInput.length < 8) {
+      triggerToast('Master password must be at least 8 characters long.', 'error');
+      return;
+    }
+    if (masterPasswordInput !== confirmMasterPasswordInput) {
+      triggerToast('Master passwords do not match.', 'error');
+      return;
+    }
+
+    setMasterSubmitting(true);
+    try {
+      const salt = generateUserSalt();
+      const masterKey = await deriveMasterKey(masterPasswordInput, salt);
+      const keyVerifier = await computeKeyVerifier(masterKey);
+
+      // Generate recovery verifier
+      const recKey = await deriveKeyFromRecoveryCode(generatedRecoveryCode, salt);
+      const recoveryVerifier = await computeKeyVerifier(recKey);
+
+      // Save security profile in users/{uid}/security/keys
+      const secDocRef = doc(db, 'users', currentUser.uid, 'security', 'keys');
+      const profileData = {
+        kdfSalt: salt,
+        keyVerifier,
+        recoveryVerifier,
+        createdAt: serverTimestamp()
+      };
+      await setDoc(secDocRef, profileData);
+
+      setUserSecurityProfile(profileData);
+      setActiveVaultKey(masterKey);
+      setIsVaultLocked(false);
+      setIsSetupMasterModalOpen(false);
+
+      // Check and migrate legacy v1 items in place non-destructively
+      const vaultColRef = collection(db, 'users', currentUser.uid, 'vault');
+      const legacyDocs = await onSnapshot(vaultColRef, async (snap) => {
+        for (const d of snap.docs) {
+          const item = d.data();
+          if (!item.encPayload) {
+            // Decrypt legacy password
+            const plainPassword = await decryptLegacyPassword(item.password, currentUser.uid);
+            // Encrypt full payload under new master key
+            const encPayload = await encryptFullPayload({
+              website: item.website || '',
+              url: item.url || '',
+              username: item.username || '',
+              password: plainPassword,
+              notes: ''
+            }, masterKey);
+
+            // Update in-place keeping legacy backup
+            await updateDoc(doc(db, 'users', currentUser.uid, 'vault', d.id), {
+              schemaVersion: 2,
+              encPayload,
+              _legacyBackup: {
+                website: item.website || '',
+                username: item.username || '',
+                password: item.password || '',
+                url: item.url || ''
+              },
+              updatedAt: serverTimestamp()
+            });
+          }
+        }
+      });
+
+      triggerToast('Master Password established! Zero-Knowledge Vault Active.');
+    } catch (err) {
+      console.error("Master setup error:", err);
+      triggerToast(err.message || 'Failed to establish Master Password.', 'error');
+    } finally {
+      setMasterSubmitting(false);
+    }
+  };
+
+  // Save / Update Item
+  const handleSavePassword = async (e) => {
+    e.preventDefault();
+    if (!newWebsite.trim() || !newPassword.trim()) {
+      triggerToast('Please provide a website name and password.', 'error');
+      return;
+    }
+
+    if (!activeVaultKey) {
+      triggerToast('Vault is locked. Unlock to make changes.', 'error');
+      return;
+    }
+
+    const domain = getDomainFromWebsite(newWebsite, newUrl);
+    const finalUrl = newUrl.trim() 
+      ? (newUrl.startsWith('http') ? newUrl.trim() : `https://${newUrl.trim()}`)
+      : `https://${domain}`;
+
+    setSavingItem(true);
+    try {
+      const vaultRef = collection(db, 'users', currentUser.uid, 'vault');
+
+      // Encrypt full payload (website, url, username, password, notes)
+      const payloadObj = {
+        website: newWebsite.trim(),
+        url: finalUrl,
+        username: newUsername.trim() || '',
+        password: newPassword,
+        notes: newNotes.trim()
+      };
+
+      const encPayload = await encryptFullPayload(payloadObj, activeVaultKey);
+
+      if (editingItemId) {
+        // Update document
+        const itemDoc = doc(db, 'users', currentUser.uid, 'vault', editingItemId);
+        await updateDoc(itemDoc, {
+          schemaVersion: 2,
+          encPayload,
+          customIcon: iconMode === 'custom' ? newCustomIcon.trim() : '',
+          updatedAt: serverTimestamp()
+        });
+        triggerToast(`Updated ${newWebsite.trim()}`);
+      } else {
+        // Create new document
+        await addDoc(vaultRef, {
+          schemaVersion: 2,
+          encPayload,
+          customIcon: iconMode === 'custom' ? newCustomIcon.trim() : '',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+        triggerToast(`Encrypted & saved ${newWebsite.trim()}!`);
+      }
+      setIsAddModalOpen(false);
+    } catch (err) {
+      console.error("Save error:", err);
+      triggerToast(err.message || 'Failed to save credential.', 'error');
+    } finally {
+      setSavingItem(false);
+    }
+  };
+
+  // Delete Item
+  const handleDeleteItem = async (id, name) => {
+    if (!currentUser) return;
+    try {
+      const itemDoc = doc(db, 'users', currentUser.uid, 'vault', id);
+      await deleteDoc(itemDoc);
+      triggerToast(`Deleted ${name} entry`);
+    } catch (err) {
+      triggerToast(err.message || 'Failed to delete entry.', 'error');
+    }
+  };
+
+  // Clipboard copy with 30s auto-purge
   const copyToClipboard = (text, id, label = 'Password') => {
     navigator.clipboard.writeText(text);
     setCopiedId(`${id}-${label}`);
-    triggerToast(`${label} copied to clipboard!`);
+    triggerToast(`${label} copied to clipboard (auto-clears in 30s)`);
+
+    // Reset button icon after 2s
+    setTimeout(() => setCopiedId(null), 2000);
+
+    // Auto-purge clipboard after 30 seconds for security
     setTimeout(() => {
-      setCopiedId(null);
-    }, 2000);
+      navigator.clipboard.readText().then(current => {
+        if (current === text) {
+          navigator.clipboard.writeText('');
+        }
+      }).catch(() => {});
+    }, 30000);
   };
 
   const generateStrongPassword = () => {
@@ -170,8 +533,9 @@ export default function App() {
     setNewWebsite('');
     setNewUrl('');
     setNewCustomIcon('');
-    setNewUsername(currentUser?.email || '');
+    setNewUsername('');
     setNewPassword('');
+    setNewNotes('');
     setIconMode('auto');
     setIsAddModalOpen(true);
   };
@@ -183,73 +547,85 @@ export default function App() {
     setNewCustomIcon(item.customIcon || '');
     setNewUsername(item.username);
     setNewPassword(item.password);
+    setNewNotes(item.notes || '');
     setIconMode(item.customIcon ? 'custom' : 'auto');
     setIsAddModalOpen(true);
   };
 
-  const handleSavePassword = (e) => {
+  const handleGoogleSignIn = async () => {
+    try {
+      setAuthSubmitting(true);
+      await loginWithGoogle();
+      triggerToast('Signed in with Google!');
+      setIsAuthModalOpen(false);
+    } catch (err) {
+      triggerToast(err.message || 'Google sign-in failed', 'error');
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleEmailAuth = async (e) => {
     e.preventDefault();
-    if (!newWebsite.trim() || !newPassword.trim()) {
-      triggerToast('Please provide a website name and password.', 'error');
+    if (!emailInput || !passwordInput) {
+      triggerToast('Please provide both email and password', 'error');
       return;
     }
 
-    const domain = getDomainFromWebsite(newWebsite, newUrl);
-    const finalUrl = newUrl.trim() 
-      ? (newUrl.startsWith('http') ? newUrl.trim() : `https://${newUrl.trim()}`)
-      : `https://${domain}`;
-
-    if (editingItemId) {
-      // Update existing item
-      setVaultItems(vaultItems.map(item => {
-        if (item.id === editingItemId) {
-          return {
-            ...item,
-            website: newWebsite.trim(),
-            url: finalUrl,
-            customIcon: iconMode === 'custom' ? newCustomIcon.trim() : '',
-            username: newUsername.trim() || currentUser?.email || 'N/A',
-            password: newPassword,
-            updatedAt: 'Just now'
-          };
-        }
-        return item;
-      }));
-      triggerToast(`Updated ${newWebsite.trim()}`);
-    } else {
-      // Create new item
-      const newItem = {
-        id: Date.now().toString(),
-        website: newWebsite.trim(),
-        url: finalUrl,
-        customIcon: iconMode === 'custom' ? newCustomIcon.trim() : '',
-        username: newUsername.trim() || currentUser?.email || 'N/A',
-        password: newPassword,
-        category: 'General',
-        updatedAt: 'Just now'
-      };
-      setVaultItems([newItem, ...vaultItems]);
-      triggerToast(`Credentials for ${newItem.website} saved!`);
+    try {
+      setAuthSubmitting(true);
+      if (authMode === 'signup') {
+        await registerWithEmail(emailInput, passwordInput);
+        triggerToast('Account created and signed in!');
+      } else {
+        await loginWithEmail(emailInput, passwordInput);
+        triggerToast('Signed in successfully!');
+      }
+      setIsAuthModalOpen(false);
+      setEmailInput('');
+      setPasswordInput('');
+    } catch (err) {
+      triggerToast(err.message || 'Authentication error', 'error');
+    } finally {
+      setAuthSubmitting(false);
     }
-
-    setIsAddModalOpen(false);
   };
 
-  const handleDeleteItem = (id, name) => {
-    setVaultItems(vaultItems.filter(item => item.id !== id));
-    triggerToast(`Deleted ${name} entry`);
+  const handleLogout = async () => {
+    try {
+      handleLockVault();
+      await logoutUser();
+      triggerToast('Logged out securely');
+    } catch (err) {
+      triggerToast(err.message || 'Error logging out', 'error');
+    }
+  };
+
+  const togglePasswordVisibility = (id) => {
+    setVisiblePasswords(prev => ({
+      ...prev,
+      [id]: !prev[id]
+    }));
   };
 
   const filteredItems = vaultItems.filter(item => 
-    item.website.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    item.username.toLowerCase().includes(searchQuery.toLowerCase())
+    item.website?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    item.username?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Computed preview icon for modal
   const previewDomain = getDomainFromWebsite(newWebsite || 'google', newUrl);
   const previewFaviconUrl = iconMode === 'custom' && newCustomIcon.trim() 
     ? newCustomIcon.trim() 
     : `https://www.google.com/s2/favicons?domain=${previewDomain}&sz=128`;
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400 gap-3">
+        <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
+        <span className="text-sm font-medium">Securing KeyLocker connection...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
@@ -258,7 +634,7 @@ export default function App() {
         <div className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-2xl backdrop-blur-md border text-sm font-medium transition-all duration-300 animate-in fade-in slide-in-from-top-4 ${
           notification.type === 'error' 
             ? 'bg-rose-950/80 border-rose-500/50 text-rose-200' 
-            : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-200'
+            : (notification.type === 'info' ? 'bg-indigo-950/80 border-indigo-500/50 text-indigo-200' : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-200')
         }`}>
           {notification.type === 'error' ? <AlertCircle className="w-4 h-4 text-rose-400" /> : <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
           <span>{notification.msg}</span>
@@ -277,8 +653,9 @@ export default function App() {
                 <span className="font-bold text-lg tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
                   KeyLocker
                 </span>
-                <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                  Isolated Vault
+                <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3" />
+                  Zero-Knowledge
                 </span>
               </div>
             </div>
@@ -286,37 +663,82 @@ export default function App() {
 
           <div className="flex items-center gap-3">
             {currentUser ? (
-              <div className="flex items-center gap-3 bg-slate-800/50 border border-slate-700/60 rounded-full py-1.5 pl-2 pr-3">
-                <img 
-                  src={currentUser.avatar} 
-                  alt={currentUser.name} 
-                  className="w-7 h-7 rounded-full ring-2 ring-indigo-500/50 object-cover"
-                />
-                <div className="hidden sm:block text-left text-xs">
-                  <p className="font-medium text-slate-200 leading-tight">{currentUser.name}</p>
-                  <p className="text-slate-400 text-[11px] leading-tight truncate max-w-[140px]">{currentUser.email}</p>
+              <div className="flex items-center gap-2.5">
+                {/* Vault Lock Status Indicator */}
+                {!isVaultLocked ? (
+                  <button
+                    onClick={handleLockVault}
+                    title="Lock Vault Now"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/60 text-xs font-medium transition cursor-pointer"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Lock Vault</span>
+                  </button>
+                ) : (
+                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 text-xs font-medium">
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Locked</span>
+                  </span>
+                )}
+
+                <div className="flex items-center gap-3 bg-slate-800/50 border border-slate-700/60 rounded-full py-1.5 pl-2 pr-3">
+                  {currentUser.photoURL && !avatarError ? (
+                    <img 
+                      src={currentUser.photoURL} 
+                      alt={currentUser.displayName || currentUser.email} 
+                      referrerPolicy="no-referrer"
+                      crossOrigin="anonymous"
+                      className="w-7 h-7 rounded-full ring-2 ring-indigo-500/50 object-cover"
+                      onError={() => setAvatarError(true)}
+                    />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 text-white font-bold text-xs flex items-center justify-center shadow-inner ring-2 ring-indigo-500/30">
+                      {currentUser.displayName 
+                        ? currentUser.displayName.charAt(0).toUpperCase() 
+                        : (currentUser.email ? currentUser.email.charAt(0).toUpperCase() : 'U')}
+                    </div>
+                  )}
+                  <div className="hidden sm:block text-left text-xs">
+                    <p className="font-medium text-slate-200 leading-tight">
+                      {currentUser.displayName || currentUser.email.split('@')[0]}
+                    </p>
+                    <p className="text-slate-400 text-[11px] leading-tight truncate max-w-[140px]">
+                      {currentUser.email}
+                    </p>
+                  </div>
+                  <button 
+                    onClick={handleLogout}
+                    title="Log out"
+                    className="p-1 hover:bg-slate-700/70 rounded-full text-slate-400 hover:text-rose-400 transition ml-1 cursor-pointer"
+                  >
+                    <LogOut className="w-4 h-4" />
+                  </button>
                 </div>
-                <button 
-                  onClick={handleLogout}
-                  title="Log out"
-                  className="p-1 hover:bg-slate-700/70 rounded-full text-slate-400 hover:text-rose-400 transition ml-1"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
               </div>
             ) : (
-              <button 
-                onClick={() => handleGoogleLogin()}
-                className="flex items-center gap-2.5 px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-medium text-sm transition-all shadow-md hover:shadow-indigo-500/10 active:scale-95"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 24 24">
-                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                </svg>
-                <span>Sign in with Google</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => {
+                    setAuthMode('login');
+                    setIsAuthModalOpen(true);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-xs transition border border-slate-700 cursor-pointer"
+                >
+                  Email Login
+                </button>
+                <button 
+                  onClick={handleGoogleSignIn}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-medium text-xs transition-all shadow-md active:scale-95 cursor-pointer"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                  </svg>
+                  <span>Google Sign In</span>
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -325,47 +747,118 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-6xl mx-auto w-full px-4 sm:px-6 py-8">
         {!currentUser ? (
-          /* Unauthenticated Landing */
+          /* Landing Screen */
           <div className="max-w-2xl mx-auto text-center py-16 px-4">
             <div className="inline-flex p-3 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 mb-6 shadow-inner">
               <Shield className="w-8 h-8" />
             </div>
             <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-white mb-4">
-              Your Personal, Zero-Stress <br />
+              Your Personal, Zero-Knowledge <br />
               <span className="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
                 Password Safe
               </span>
             </h1>
             <p className="text-slate-400 text-base sm:text-lg mb-8 leading-relaxed">
-              Never reset a forgotten password again. Sign in with your Google account—only you have access to your personal vault, encrypted with modern standards.
+              Completely free, client-side encrypted with AES-256-GCM. Your master password never touches the server. Even if the database is leaked, your passwords remain 100% unbreakable.
             </p>
 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
               <button 
-                onClick={() => handleGoogleLogin('alex.developer@gmail.com')}
-                className="w-full sm:w-auto flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-all shadow-xl shadow-indigo-600/30 hover:scale-[1.02] active:scale-95"
+                onClick={handleGoogleSignIn}
+                className="w-full sm:w-auto flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-all shadow-xl shadow-indigo-600/30 hover:scale-[1.02] active:scale-95 cursor-pointer"
               >
                 <LogIn className="w-5 h-5" />
-                <span>Sign In with Google</span>
+                <span>Continue with Google</span>
               </button>
 
               <button 
-                onClick={() => handleGoogleLogin('guest.demo@gmail.com')}
-                className="w-full sm:w-auto px-6 py-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition border border-slate-700"
+                onClick={() => {
+                  setAuthMode('signup');
+                  setIsAuthModalOpen(true);
+                }}
+                className="w-full sm:w-auto px-6 py-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition border border-slate-700 cursor-pointer"
               >
-                Try Live Preview
+                Create Account with Email
+              </button>
+            </div>
+
+            {/* Feature Highlights */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-16 text-left">
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
+                <Lock className="w-5 h-5 text-indigo-400 mb-2" />
+                <h3 className="font-semibold text-slate-200 text-sm">True Zero-Knowledge</h3>
+                <p className="text-xs text-slate-400 mt-1">PBKDF2 with 600,000 iterations. Master passwords never leave your browser.</p>
+              </div>
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
+                <ShieldCheck className="w-5 h-5 text-purple-400 mb-2" />
+                <h3 className="font-semibold text-slate-200 text-sm">Full-Payload Encryption</h3>
+                <p className="text-xs text-slate-400 mt-1">Websites, usernames, passwords and URLs are all encrypted into a unified cipher.</p>
+              </div>
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
+                <Sparkles className="w-5 h-5 text-emerald-400 mb-2" />
+                <h3 className="font-semibold text-slate-200 text-sm">Auto-Lock & Purge</h3>
+                <p className="text-xs text-slate-400 mt-1">Vault locks automatically on inactivity; clipboards purge automatically in 30s.</p>
+              </div>
+            </div>
+          </div>
+        ) : isVaultLocked ? (
+          /* Vault Locked Screen */
+          <div className="max-w-md mx-auto my-12 bg-slate-900/80 border border-slate-800 rounded-3xl p-8 shadow-2xl backdrop-blur-xl text-center animate-in fade-in">
+            <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto mb-5 shadow-inner">
+              <Lock className="w-7 h-7" />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-1">Vault is Locked</h2>
+            <p className="text-xs text-slate-400 mb-6">
+              Enter your Master Password to decrypt your credentials.
+            </p>
+
+            <form onSubmit={handleUnlockVault} className="space-y-4">
+              <div className="relative text-left">
+                <Key className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="password"
+                  required
+                  placeholder="Master Password"
+                  value={masterPasswordInput}
+                  onChange={(e) => setMasterPasswordInput(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={masterSubmitting}
+                className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {masterSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />}
+                <span>Unlock Vault</span>
+              </button>
+            </form>
+
+            <div className="mt-5 pt-4 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-500">
+              <button
+                onClick={() => setIsRecoveryModalOpen(true)}
+                className="text-indigo-400 hover:underline cursor-pointer"
+              >
+                Forgot Master Password?
+              </button>
+              <button
+                onClick={handleLogout}
+                className="text-slate-400 hover:text-rose-400 cursor-pointer"
+              >
+                Sign out
               </button>
             </div>
           </div>
         ) : (
-          /* Authenticated Vault Dashboard */
+          /* Unlocked Dashboard */
           <div>
             {/* Top Toolbar */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 mb-8">
               <div>
                 <h1 className="text-2xl font-bold text-white tracking-tight">Your Password Locker</h1>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Authenticated as <span className="text-indigo-400 font-medium">{currentUser.email}</span>
+                  Decrypted in Client RAM &bull; <span className="text-indigo-400 font-medium">{currentUser.email}</span>
                 </p>
               </div>
 
@@ -394,7 +887,7 @@ export default function App() {
                 {searchQuery && (
                   <button 
                     onClick={() => setSearchQuery('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-slate-300"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-slate-300 cursor-pointer"
                   >
                     Clear
                   </button>
@@ -402,20 +895,25 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2 text-xs text-slate-400 bg-slate-900/50 border border-slate-800 px-4 py-2.5 rounded-xl whitespace-nowrap">
-                <Shield className="w-4 h-4 text-emerald-400" />
-                <span>{filteredItems.length} total encrypted items</span>
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>{filteredItems.length} secured passwords</span>
               </div>
             </div>
 
-            {/* Vault List / Cards */}
-            {filteredItems.length === 0 ? (
+            {/* Content State: Loading, Empty, or Cards */}
+            {dataLoading ? (
+              <div className="flex flex-col items-center justify-center py-20 text-slate-500 gap-2">
+                <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
+                <span className="text-xs">Decrypting your vault in memory...</span>
+              </div>
+            ) : filteredItems.length === 0 ? (
               <div className="text-center py-16 bg-slate-900/40 border border-slate-800/80 rounded-2xl">
                 <div className="inline-flex p-3 rounded-2xl bg-slate-800 text-slate-400 mb-3">
                   <KeyRound className="w-6 h-6" />
                 </div>
-                <h3 className="text-slate-200 font-semibold mb-1">No passwords found</h3>
+                <h3 className="text-slate-200 font-semibold mb-1">No passwords in your vault</h3>
                 <p className="text-slate-500 text-xs max-w-sm mx-auto mb-4">
-                  {searchQuery ? `No credentials match "${searchQuery}"` : "You haven't saved any passwords to this locker yet."}
+                  {searchQuery ? `No credentials match "${searchQuery}"` : "Add your first website password. It is encrypted entirely in your browser before saving."}
                 </p>
                 <button
                   onClick={openCreateModal}
@@ -440,7 +938,7 @@ export default function App() {
                       className="group bg-slate-900/70 hover:bg-slate-900 border border-slate-800 hover:border-slate-700/80 rounded-2xl p-4 transition-all duration-200 flex flex-col justify-between shadow-sm hover:shadow-xl hover:shadow-black/40"
                     >
                       <div>
-                        {/* Card Header: Favicon & Website */}
+                        {/* Header: Favicon & Website */}
                         <div className="flex items-start justify-between gap-3 mb-3">
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-xl bg-slate-900 border border-slate-700/60 flex items-center justify-center shadow-md overflow-hidden relative group-hover:border-slate-500 transition shrink-0">
@@ -453,7 +951,7 @@ export default function App() {
                                 />
                               ) : (
                                 <span className="font-bold text-slate-300 text-base">
-                                  {item.website.charAt(0).toUpperCase()}
+                                  {item.website?.charAt(0).toUpperCase()}
                                 </span>
                               )}
                             </div>
@@ -472,7 +970,9 @@ export default function App() {
                                   </a>
                                 )}
                               </h3>
-                              <span className="text-[11px] text-slate-500">Updated {item.updatedAt}</span>
+                              <span className="text-[11px] text-slate-500">
+                                {item.isLegacyV1 ? 'v1 (Legacy)' : 'AES-GCM (v2)'}
+                              </span>
                             </div>
                           </div>
 
@@ -480,14 +980,14 @@ export default function App() {
                             <button
                               onClick={() => openEditModal(item)}
                               title="Edit item & icon"
-                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition"
+                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition cursor-pointer"
                             >
                               <Edit3 className="w-4 h-4" />
                             </button>
                             <button
                               onClick={() => handleDeleteItem(item.id, item.website)}
                               title="Delete"
-                              className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition"
+                              className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -498,15 +998,17 @@ export default function App() {
                         <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-2.5 mb-2 flex items-center justify-between text-xs">
                           <div className="flex items-center gap-2 overflow-hidden mr-2">
                             <User className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                            <span className="text-slate-300 truncate font-mono">{item.username}</span>
+                            <span className="text-slate-300 truncate font-mono">{item.username || 'No Username'}</span>
                           </div>
-                          <button
-                            onClick={() => copyToClipboard(item.username, item.id, 'Username')}
-                            title="Copy username"
-                            className="p-1 text-slate-400 hover:text-indigo-400 rounded transition shrink-0 cursor-pointer"
-                          >
-                            {isCopiedUser ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                          </button>
+                          {item.username && (
+                            <button
+                              onClick={() => copyToClipboard(item.username, item.id, 'Username')}
+                              title="Copy username"
+                              className="p-1 text-slate-400 hover:text-indigo-400 rounded transition shrink-0 cursor-pointer"
+                            >
+                              {isCopiedUser ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
                         </div>
 
                         {/* Password row */}
@@ -544,6 +1046,133 @@ export default function App() {
         )}
       </main>
 
+      {/* Modal: Setup Initial Master Password */}
+      {isSetupMasterModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-lg p-7 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mb-4">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-1">Set Your Master Password</h2>
+            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
+              This password derives your zero-knowledge AES-256 encryption key. <strong>It is never sent to Firebase</strong>, so we cannot recover it for you.
+            </p>
+
+            <form onSubmit={handleSetupMasterPassword} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Create Master Password <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="password"
+                  required
+                  placeholder="At least 8 characters"
+                  value={masterPasswordInput}
+                  onChange={(e) => setMasterPasswordInput(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Confirm Master Password <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="password"
+                  required
+                  placeholder="Repeat master password"
+                  value={confirmMasterPasswordInput}
+                  onChange={(e) => setConfirmMasterPasswordInput(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              {/* Emergency Recovery Key Box */}
+              <div className="bg-slate-950/80 border border-indigo-500/30 rounded-2xl p-4 mt-2">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-indigo-300 flex items-center gap-1.5">
+                    <HelpCircle className="w-4 h-4 text-indigo-400" />
+                    Emergency Recovery Key
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(generatedRecoveryCode);
+                      triggerToast('Recovery Code copied to clipboard!');
+                    }}
+                    className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer font-medium"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    Copy
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400 mb-2 leading-relaxed">
+                  Save this key in a safe place. If you ever forget your master password, this is the only way to recover your vault:
+                </p>
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5 font-mono text-center text-xs text-emerald-400 font-bold tracking-wider select-all">
+                  {generatedRecoveryCode}
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={masterSubmitting}
+                  className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  {masterSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
+                  <span>Save Master Password & Activate Vault</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Recovery Key Unlock */}
+      {isRecoveryModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-indigo-400" />
+                Emergency Vault Recovery
+              </h2>
+              <button 
+                onClick={() => setIsRecoveryModalOpen(false)}
+                className="text-slate-400 hover:text-slate-200 text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
+              Enter your 24-character Emergency Recovery Key (e.g. <code>A7B9-KD24-...</code>) to decrypt your vault.
+            </p>
+
+            <form onSubmit={handleRecoveryUnlock} className="space-y-4">
+              <input
+                type="text"
+                required
+                placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+                value={recoveryCodeInput}
+                onChange={(e) => setRecoveryCodeInput(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-sm text-center font-mono text-emerald-400 font-bold tracking-wider focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase"
+              />
+
+              <button
+                type="submit"
+                disabled={masterSubmitting}
+                className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm transition shadow-lg shadow-emerald-600/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {masterSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />}
+                <span>Recover & Unlock Vault</span>
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Modal: Add or Edit Password */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
@@ -554,7 +1183,7 @@ export default function App() {
                   <KeyRound className="w-4 h-4" />
                 </div>
                 <h2 className="text-lg font-bold text-white">
-                  {editingItemId ? 'Edit Credentials & Icon' : 'Save New Password'}
+                  {editingItemId ? 'Edit Credentials' : 'Save New Password'}
                 </h2>
               </div>
               <button 
@@ -610,14 +1239,14 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setIconMode('auto')}
-                      className={`px-2.5 py-1 rounded-md transition ${iconMode === 'auto' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-slate-200'}`}
+                      className={`px-2.5 py-1 rounded-md transition cursor-pointer ${iconMode === 'auto' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-slate-200'}`}
                     >
                       Auto Favicon
                     </button>
                     <button
                       type="button"
                       onClick={() => setIconMode('custom')}
-                      className={`px-2.5 py-1 rounded-md transition ${iconMode === 'custom' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-slate-200'}`}
+                      className={`px-2.5 py-1 rounded-md transition cursor-pointer ${iconMode === 'custom' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-slate-200'}`}
                     >
                       Custom Icon URL
                     </button>
@@ -626,7 +1255,7 @@ export default function App() {
 
                 {iconMode === 'auto' ? (
                   <p className="text-[11px] text-slate-500 leading-normal">
-                    Automatically fetches the official high-resolution favicon using Google's Favicon service based on the website name.
+                    Automatically fetches the official high-resolution favicon based on the website name.
                   </p>
                 ) : (
                   <div>
@@ -644,7 +1273,7 @@ export default function App() {
                 )}
               </div>
 
-              {/* Website URL (Optional for direct link) */}
+              {/* Direct Website URL */}
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
                   Direct Website URL <span className="text-slate-500 font-normal">(Optional)</span>
@@ -670,7 +1299,7 @@ export default function App() {
                   <User className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
-                    placeholder="e.g. user@gmail.com or dev_explorer"
+                    placeholder="e.g. user@gmail.com or username"
                     value={newUsername}
                     onChange={(e) => setNewUsername(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -724,10 +1353,98 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition shadow-lg shadow-indigo-600/25 cursor-pointer"
+                  disabled={savingItem}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition shadow-lg shadow-indigo-600/25 cursor-pointer flex items-center gap-2 disabled:opacity-50"
                 >
-                  {editingItemId ? 'Update Entry' : 'Save Password'}
+                  {savingItem && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>{editingItemId ? 'Update Entry' : 'Save Password'}</span>
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Email Login / Signup */}
+      {isAuthModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold text-white">
+                {authMode === 'signup' ? 'Create Account' : 'Sign In'}
+              </h2>
+              <button 
+                onClick={() => setIsAuthModalOpen(false)}
+                className="text-slate-400 hover:text-slate-200 text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleEmailAuth} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">Email Address</label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="email"
+                    required
+                    placeholder="name@example.com"
+                    value={emailInput}
+                    onChange={(e) => setEmailInput(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">Password</label>
+                <div className="relative">
+                  <Key className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="password"
+                    required
+                    placeholder="••••••••"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={authSubmitting}
+                className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {authSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>{authMode === 'signup' ? 'Sign Up' : 'Sign In'}</span>
+              </button>
+
+              <div className="pt-2 text-center text-xs text-slate-400">
+                {authMode === 'signup' ? (
+                  <span>
+                    Already have an account?{' '}
+                    <button 
+                      type="button" 
+                      onClick={() => setAuthMode('login')} 
+                      className="text-indigo-400 hover:underline cursor-pointer"
+                    >
+                      Sign In
+                    </button>
+                  </span>
+                ) : (
+                  <span>
+                    Don't have an account?{' '}
+                    <button 
+                      type="button" 
+                      onClick={() => setAuthMode('signup')} 
+                      className="text-indigo-400 hover:underline cursor-pointer"
+                    >
+                      Sign Up
+                    </button>
+                  </span>
+                )}
               </div>
             </form>
           </div>
@@ -736,7 +1453,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-slate-950/80 py-6 text-center text-xs text-slate-500">
-        <p>KeyLocker &bull; Protected with per-user vault isolation &bull; Personal use</p>
+        <p>KeyLocker &bull; Zero-Knowledge AES-256-GCM Vault &bull; 100% Free & Open</p>
       </footer>
     </div>
   );

@@ -21,7 +21,7 @@ import {
   serverTimestamp, 
   onAuthStateChanged 
 } from './firebase';
-import { encryptPassword, decryptPassword } from './crypto';
+import { encryptPassword, decryptPassword, getAccountKey, clearCachedKey } from './crypto';
 
 // Helper to extract or guess domain for Google Favicon API
 const getDomainFromWebsite = (website, customUrl = '') => {
@@ -123,6 +123,7 @@ export default function App() {
     if (!currentUser) {
       setVaultItems([]);
       setDataLoading(false);
+      clearCachedKey();
       return;
     }
 
@@ -130,19 +131,24 @@ export default function App() {
     setFirestoreError(null);
     const vaultRef = collection(db, 'users', currentUser.uid, 'vault');
 
+    // Pre-derive account key once in background
+    let sessionKeyPromise = getAccountKey(currentUser.uid);
+
     const unsubscribe = onSnapshot(vaultRef, async (snapshot) => {
       const rawDocs = snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data()
       }));
 
-      // Decrypt credentials in parallel
+      // Await key once
+      const accountKey = await sessionKeyPromise;
+
+      // Decrypt credentials concurrently using the single cached key
       const decryptedItems = await Promise.all(
         rawDocs.map(async (item) => {
           try {
-            // Handle payload or legacy password field
             const targetCipher = item.encPayload || item.password;
-            const plain = await decryptPassword(targetCipher, currentUser.uid);
+            const plain = await decryptPassword(targetCipher, currentUser.uid, accountKey);
             return {
               ...item,
               password: plain

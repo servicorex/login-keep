@@ -1,8 +1,15 @@
 // KeyLocker Lightweight Cryptographic Engine
-// AES-256-GCM client-side encryption with random 96-bit IVs.
-// Note: Derived from authenticated account context. Provides practical field-level encryption.
+// Optimized with in-memory key caching for sub-millisecond encryption/decryption.
 
-const getAccountKey = async (userUid) => {
+let cachedAccountKey = null;
+let cachedKeyUid = null;
+
+// Get or derive AES-GCM key once per authenticated session
+export const getAccountKey = async (userUid) => {
+  if (cachedAccountKey && cachedKeyUid === userUid) {
+    return cachedAccountKey;
+  }
+
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
@@ -12,7 +19,7 @@ const getAccountKey = async (userUid) => {
     ["deriveKey"]
   );
 
-  return crypto.subtle.deriveKey(
+  const derived = await crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
       salt: enc.encode("keylocker_vault_salt_v1"),
@@ -24,13 +31,38 @@ const getAccountKey = async (userUid) => {
     false,
     ["encrypt", "decrypt"]
   );
+
+  cachedAccountKey = derived;
+  cachedKeyUid = userUid;
+  return derived;
+};
+
+// Clear cached key on sign-out
+export const clearCachedKey = () => {
+  cachedAccountKey = null;
+  cachedKeyUid = null;
+};
+
+// Fast single-pass Base64 encoder without string concatenation loop
+const bufferToBase64 = (buffer) => {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  const chunkSize = 8192;
+  for (let i = 0; i < len; i += chunkSize) {
+    binary += String.fromCharCode.apply(
+      null,
+      bytes.subarray(i, Math.min(i + chunkSize, len))
+    );
+  }
+  return btoa(binary);
 };
 
 // Encrypt plaintext password using AES-256-GCM with fresh 96-bit random IV
-export const encryptPassword = async (plainText, userUid) => {
+export const encryptPassword = async (plainText, userUid, preloadedKey = null) => {
   if (!plainText) return "";
   try {
-    const key = await getAccountKey(userUid);
+    const key = preloadedKey || await getAccountKey(userUid);
     const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit unique IV
     const enc = new TextEncoder();
     const encoded = enc.encode(plainText);
@@ -45,26 +77,21 @@ export const encryptPassword = async (plainText, userUid) => {
     combined.set(iv, 0);
     combined.set(new Uint8Array(cipherBuffer), iv.length);
 
-    let binary = "";
-    for (let i = 0; i < combined.length; i++) {
-      binary += String.fromCharCode(combined[i]);
-    }
-    return `enc::${btoa(binary)}`;
+    return `enc::${bufferToBase64(combined)}`;
   } catch (err) {
     console.error("Encryption error:", err);
     return plainText;
   }
 };
 
-// Decrypt ciphertext back to plaintext (supports both standard enc:: and enc::v2:: format)
-export const decryptPassword = async (encryptedText, userUid) => {
+// Decrypt ciphertext back to plaintext
+export const decryptPassword = async (encryptedText, userUid, preloadedKey = null) => {
   if (!encryptedText) return "";
   if (!encryptedText.startsWith("enc::")) {
     return encryptedText; // unencrypted legacy plaintext
   }
 
   try {
-    // If it was saved with v2 prefix, strip appropriately
     let base64Data = encryptedText;
     if (base64Data.startsWith("enc::v2::")) {
       base64Data = base64Data.slice("enc::v2::".length);
@@ -81,7 +108,7 @@ export const decryptPassword = async (encryptedText, userUid) => {
     const iv = combined.slice(0, 12);
     const cipherData = combined.slice(12);
 
-    const key = await getAccountKey(userUid);
+    const key = preloadedKey || await getAccountKey(userUid);
     const decryptedBuffer = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv },
       key,
@@ -91,12 +118,12 @@ export const decryptPassword = async (encryptedText, userUid) => {
     const dec = new TextDecoder();
     const result = dec.decode(decryptedBuffer);
 
-    // If it was packed as a JSON object, extract password
+    // If it was packed as JSON object, extract password
     try {
       const parsed = JSON.parse(result);
       if (parsed && parsed.password) return parsed.password;
     } catch {
-      // Not JSON, raw password string
+      // not JSON
     }
 
     return result;

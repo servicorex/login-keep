@@ -6,7 +6,9 @@ import {
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
   signOut, 
-  onAuthStateChanged 
+  onAuthStateChanged,
+  setPersistence,
+  browserSessionPersistence
 } from "firebase/auth";
 import { 
   getFirestore, 
@@ -40,10 +42,19 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 export const db = getFirestore(app);
 
-// Authentication helpers
-export const loginWithGoogle = () => signInWithPopup(auth, googleProvider);
-export const loginWithEmail = (email, password) => signInWithEmailAndPassword(auth, email, password);
-export const registerWithEmail = (email, password) => createUserWithEmailAndPassword(auth, email, password);
+// Authentication helpers (session persistence: cleared when browser session ends)
+export const loginWithGoogle = async () => {
+  await setPersistence(auth, browserSessionPersistence);
+  return signInWithPopup(auth, googleProvider);
+};
+export const loginWithEmail = async (email, password) => {
+  await setPersistence(auth, browserSessionPersistence);
+  return signInWithEmailAndPassword(auth, email, password);
+};
+export const registerWithEmail = async (email, password) => {
+  await setPersistence(auth, browserSessionPersistence);
+  return createUserWithEmailAndPassword(auth, email, password);
+};
 export const logoutUser = () => signOut(auth);
 
 export { 

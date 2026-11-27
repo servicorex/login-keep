@@ -32,6 +32,17 @@ import {
   onAuthStateChanged 
 } from './firebase';
 import { encryptPassword, decryptPassword, getAccountKey, clearCachedKey } from './crypto';
+import {
+  INACTIVITY_TIMEOUT_MS,
+  INACTIVITY_MESSAGE,
+  LOGOUT_BROADCAST_KEY,
+  LAST_ACTIVITY_KEY,
+  getLastActivity,
+  setLastActivity,
+  clearLastActivity,
+  isSessionExpired,
+  broadcastLogout,
+} from './utils/inactivity';
 
 // Helper to extract or guess domain for Google Favicon API
 const getDomainFromWebsite = (website, customUrl = '') => {
@@ -133,13 +144,46 @@ export default function App() {
     setTimeout(() => setNotification(null), 3500);
   };
 
+  const clearSensitiveState = () => {
+    clearCachedKey();
+    setVaultItems([]);
+    setVisiblePasswords({});
+    setSearchQuery('');
+    setCopiedId(null);
+    setIsAddModalOpen(false);
+    setEditingItemId(null);
+    setDeletingItem(null);
+    setNewWebsite('');
+    setNewUrl('');
+    setNewCustomIcon('');
+    setNewUsername('');
+    setNewPassword('');
+  };
+
   // 1. Firebase Auth listener + browser back/forward navigation
   useEffect(() => {
     const onPopState = () => {
       setCurrentPath(window.location.pathname || '/');
     };
     window.addEventListener('popstate', onPopState);
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user && isSessionExpired()) {
+        try {
+          await logoutUser();
+        } catch {
+          // ignore signOut error during expiry cleanup
+        }
+        clearSensitiveState();
+        clearLastActivity();
+        setCurrentUser(null);
+        setAuthLoading(false);
+        navigate('/login', true);
+        triggerToast(INACTIVITY_MESSAGE, 'error');
+        return;
+      }
+      if (user && !getLastActivity()) {
+        setLastActivity(Date.now());
+      }
       setCurrentUser(user);
       setAuthLoading(false);
     });
@@ -147,6 +191,7 @@ export default function App() {
       window.removeEventListener('popstate', onPopState);
       unsubscribe();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Protected route enforcement
@@ -168,6 +213,7 @@ export default function App() {
       return;
     }
 
+    let isMounted = true;
     setDataLoading(true);
     const vaultRef = collection(db, 'users', currentUser.uid, 'vault');
 
@@ -175,6 +221,7 @@ export default function App() {
     let sessionKeyPromise = getAccountKey(currentUser.uid);
 
     const unsubscribe = onSnapshot(vaultRef, async (snapshot) => {
+      if (!isMounted) return;
       const rawDocs = snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data()
@@ -182,6 +229,7 @@ export default function App() {
 
       // Await key once
       const accountKey = await sessionKeyPromise;
+      if (!isMounted) return;
 
       // Decrypt credentials concurrently using the single cached key
       const decryptedItems = await Promise.all(
@@ -207,26 +255,112 @@ export default function App() {
         return timeB - timeA;
       });
 
+      if (!isMounted) return;
       setVaultItems(decryptedItems);
       setDataLoading(false);
     }, (error) => {
+      if (!isMounted) return;
       console.error("Firestore error:", error);
       triggerToast(error.message || 'Failed to sync vault.', 'error');
       setDataLoading(false);
     });
 
-    if (authLoading) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-[#05050a] text-slate-300 gap-3">
-        <Loader2 className="w-7 h-7 animate-spin text-purple-400" />
-        <span className="text-sm font-medium tracking-wide text-slate-400">
-          Verifying session...
-        </span>
-      </div>
-    );
-  }
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, currentUser]);
 
-  return () => unsubscribe();
+  // 3. 30-Minute Inactivity Auto-Logout & Cross-Tab Sync
+  useEffect(() => {
+    if (authLoading || !currentUser) return;
+
+    let timeoutId = null;
+    let lastThrottledUpdate = 0;
+    let isExpiring = false;
+
+    const performExpiryLogout = async () => {
+      if (isExpiring) return;
+      isExpiring = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      clearLastActivity();
+      broadcastLogout();
+      clearSensitiveState();
+      try {
+        await logoutUser();
+      } catch {
+        // ignore
+      }
+      navigate('/login', true);
+      triggerToast(INACTIVITY_MESSAGE, 'error');
+    };
+
+    const scheduleTimer = (remainingMs = INACTIVITY_TIMEOUT_MS) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(performExpiryLogout, Math.max(0, remainingMs));
+    };
+
+    const recordActivity = () => {
+      if (isExpiring) return;
+      const now = Date.now();
+      if (now - lastThrottledUpdate < 5000) return;
+      lastThrottledUpdate = now;
+      setLastActivity(now);
+      scheduleTimer(INACTIVITY_TIMEOUT_MS);
+    };
+
+    const validateSession = () => {
+      if (isExpiring) return;
+      if (isSessionExpired()) {
+        performExpiryLogout();
+      } else {
+        const last = getLastActivity();
+        const elapsed = last ? Date.now() - last : 0;
+        scheduleTimer(INACTIVITY_TIMEOUT_MS - elapsed);
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        validateSession();
+      }
+    };
+
+    const onStorage = (e) => {
+      if (e.key === LOGOUT_BROADCAST_KEY) {
+        if (timeoutId) clearTimeout(timeoutId);
+        clearSensitiveState();
+        logoutUser().catch(() => {});
+        navigate('/login', true);
+      } else if (e.key === LAST_ACTIVITY_KEY && e.newValue) {
+        const ts = Number(e.newValue);
+        if (Number.isFinite(ts) && ts > 0) {
+          const elapsed = Date.now() - ts;
+          if (elapsed < INACTIVITY_TIMEOUT_MS) {
+            scheduleTimer(INACTIVITY_TIMEOUT_MS - elapsed);
+          }
+        }
+      }
+    };
+
+    validateSession();
+
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'input', 'change'];
+    activityEvents.forEach((evt) => window.addEventListener(evt, recordActivity, { passive: true }));
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', validateSession);
+    window.addEventListener('pageshow', validateSession);
+    window.addEventListener('storage', onStorage);
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      activityEvents.forEach((evt) => window.removeEventListener(evt, recordActivity));
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', validateSession);
+      window.removeEventListener('pageshow', validateSession);
+      window.removeEventListener('storage', onStorage);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, currentUser]);
 
@@ -235,6 +369,7 @@ export default function App() {
     try {
       setAuthSubmitting(true);
       await loginWithGoogle();
+      setLastActivity(Date.now());
       triggerToast('Signed in with Google!');
       navigate('/vault', true);
     } catch (err) {
@@ -262,6 +397,7 @@ export default function App() {
       }
       setEmailInput('');
       setPasswordInput('');
+      setLastActivity(Date.now());
       navigate('/vault', true);
     } catch (err) {
       triggerToast(err.message || 'Authentication error', 'error');
@@ -272,20 +408,10 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      clearSensitiveState();
+      clearLastActivity();
+      broadcastLogout();
       await logoutUser();
-      clearCachedKey();
-      setVaultItems([]);
-      setVisiblePasswords({});
-      setSearchQuery('');
-      setCopiedId(null);
-      setIsAddModalOpen(false);
-      setEditingItemId(null);
-      setDeletingItem(null);
-      setNewWebsite('');
-      setNewUrl('');
-      setNewCustomIcon('');
-      setNewUsername('');
-      setNewPassword('');
       navigate('/login', true);
       triggerToast('Logged out securely');
     } catch (err) {

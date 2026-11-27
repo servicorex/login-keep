@@ -14,6 +14,7 @@ import {
 import { cn } from '@/lib/utils';
 import HeroLanding from './components/HeroLanding';
 import AuthPage from './components/AuthPage';
+import Navbar from './components/Navbar';
 import { 
   auth, 
   db, 
@@ -83,8 +84,22 @@ export default function App() {
   const [vaultItems, setVaultItems] = useState([]);
   const [dataLoading, setDataLoading] = useState(false);
 
-  // Unauthenticated view state: 'hero' or 'auth'
-  const [authView, setAuthView] = useState('hero');
+  // Unauthenticated view state & URL routing ('/', '/login', '/vault')
+  const [currentPath, setCurrentPath] = useState(() => window.location.pathname || '/');
+  const navigate = (path, replace = false) => {
+    if (window.location.pathname !== path) {
+      if (replace) {
+        window.history.replaceState({}, '', path);
+      } else {
+        window.history.pushState({}, '', path);
+      }
+    }
+    setCurrentPath(path);
+  };
+  const authView = currentPath === '/login' ? 'auth' : 'hero';
+  const setAuthView = (view) => {
+    navigate(view === 'auth' ? '/login' : '/');
+  };
   const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
@@ -118,18 +133,35 @@ export default function App() {
     setTimeout(() => setNotification(null), 3500);
   };
 
-  // 1. Firebase Auth listener
+  // 1. Firebase Auth listener + browser back/forward navigation
   useEffect(() => {
+    const onPopState = () => {
+      setCurrentPath(window.location.pathname || '/');
+    };
+    window.addEventListener('popstate', onPopState);
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
       setAuthLoading(false);
     });
-    return () => unsubscribe();
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      unsubscribe();
+    };
   }, []);
+
+  // Protected route enforcement
+  useEffect(() => {
+    if (authLoading) return;
+    if (!currentUser && currentPath === '/vault') {
+      navigate('/login', true);
+    } else if (currentUser && currentPath === '/login') {
+      navigate('/vault', true);
+    }
+  }, [authLoading, currentUser, currentPath]);
 
   // 2. Real-time Firestore sync: Direct access once signed in
   useEffect(() => {
-    if (!currentUser) {
+    if (authLoading || !currentUser) {
       setVaultItems([]);
       setDataLoading(false);
       clearCachedKey();
@@ -183,8 +215,20 @@ export default function App() {
       setDataLoading(false);
     });
 
-    return () => unsubscribe();
-  }, [currentUser]);
+    if (authLoading) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#05050a] text-slate-300 gap-3">
+        <Loader2 className="w-7 h-7 animate-spin text-purple-400" />
+        <span className="text-sm font-medium tracking-wide text-slate-400">
+          Verifying session...
+        </span>
+      </div>
+    );
+  }
+
+  return () => unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, currentUser]);
 
   // Auth Handlers
   const handleGoogleSignIn = async () => {
@@ -192,7 +236,7 @@ export default function App() {
       setAuthSubmitting(true);
       await loginWithGoogle();
       triggerToast('Signed in with Google!');
-      setAuthView('hero');
+      navigate('/vault', true);
     } catch (err) {
       triggerToast(err.message || 'Google sign-in failed', 'error');
     } finally {
@@ -216,9 +260,9 @@ export default function App() {
         await loginWithEmail(emailInput, passwordInput);
         triggerToast('Signed in successfully!');
       }
-      setAuthView('hero');
       setEmailInput('');
       setPasswordInput('');
+      navigate('/vault', true);
     } catch (err) {
       triggerToast(err.message || 'Authentication error', 'error');
     } finally {
@@ -229,6 +273,20 @@ export default function App() {
   const handleLogout = async () => {
     try {
       await logoutUser();
+      clearCachedKey();
+      setVaultItems([]);
+      setVisiblePasswords({});
+      setSearchQuery('');
+      setCopiedId(null);
+      setIsAddModalOpen(false);
+      setEditingItemId(null);
+      setDeletingItem(null);
+      setNewWebsite('');
+      setNewUrl('');
+      setNewCustomIcon('');
+      setNewUsername('');
+      setNewPassword('');
+      navigate('/login', true);
       triggerToast('Logged out securely');
     } catch (err) {
       triggerToast(err.message || 'Error logging out', 'error');
@@ -373,10 +431,32 @@ export default function App() {
     : `https://www.google.com/s2/favicons?domain=${previewDomain}&sz=128`;
 
   if (authLoading) {
+    if (authLoading) {
     return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#05050a] text-slate-300 gap-3">
+        <Loader2 className="w-7 h-7 animate-spin text-purple-400" />
+        <span className="text-sm font-medium tracking-wide text-slate-400">
+          Verifying session...
+        </span>
+      </div>
+    );
+  }
+
+  return (
       <div className="min-h-screen bg-[#05050a] flex flex-col items-center justify-center text-slate-400 gap-3">
         <Loader2 className="w-8 h-8 text-purple-500 animate-spin" />
         <span className="text-sm font-medium">Opening LoginKeep...</span>
+      </div>
+    );
+  }
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#05050a] text-slate-300 gap-3">
+        <Loader2 className="w-7 h-7 animate-spin text-purple-400" />
+        <span className="text-sm font-medium tracking-wide text-slate-400">
+          Verifying session...
+        </span>
       </div>
     );
   }
@@ -423,145 +503,16 @@ export default function App() {
       )}
 
       {/* Navigation Header */}
-      <header
-        className={`sticky top-0 z-40 transition-all duration-300 ${
-          currentUser
-            ? 'bg-[#0d1524]/85 backdrop-blur-xl border-b border-teal-500/15 shadow-[0_4px_20px_rgba(0,0,0,0.3)]'
-            : 'pt-4 pb-2 px-4 sm:px-8 bg-transparent'
-        }`}
-      >
-        <div
-          className={`mx-auto transition-all duration-300 ${
-            currentUser
-              ? 'h-14 sm:h-16 flex items-center justify-between w-full px-4 sm:px-6 lg:px-10 xl:px-12'
-              : 'h-14 sm:h-16 flex items-center justify-between max-w-7xl px-4 sm:px-6 rounded-full footer-glass-pill bg-[#0c0d1b]/70 border border-purple-500/25 backdrop-blur-2xl shadow-[0_8px_32px_rgba(0,0,0,0.65)] ring-1 ring-white/10'
-          }`}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              if (!currentUser) setAuthView('hero');
-            }}
-            className="flex items-center gap-3 text-left cursor-pointer group"
-          >
-            <div
-              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-300 group-hover:scale-105 ${
-                currentUser
-                  ? 'bg-gradient-to-br from-teal-500 to-emerald-600 shadow-md shadow-teal-500/30 ring-1 ring-teal-400/30'
-                  : 'bg-gradient-to-tr from-purple-600/90 via-violet-600 to-indigo-600 shadow-[0_0_20px_rgba(168,85,247,0.45)] ring-1 ring-purple-400/40 rounded-full'
-              }`}
-            >
-              <PixelKeyIcon className="w-4 h-4 text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.8)]" />
-            </div>
-            <div className="flex items-center gap-2.5">
-              <span
-                className={`font-black text-lg tracking-tight ${
-                  currentUser
-                    ? 'bg-gradient-to-r from-white via-slate-100 to-teal-200 bg-clip-text text-transparent'
-                    : 'bg-gradient-to-r from-white via-slate-100 to-purple-200 bg-clip-text text-transparent drop-shadow-[0_0_12px_rgba(168,85,247,0.3)]'
-                }`}
-              >
-                LoginKeep
-              </span>
-              {currentUser && (
-                <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-300 border border-teal-500/25">
-                  Personal Vault
-                </span>
-              )}
-            </div>
-          </button>
-
-          <div className="flex items-center gap-3">
-            {currentUser ? (
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2.5 py-1 pl-1 pr-2.5 rounded-full bg-[#131f33]/80 border border-teal-500/20 shadow-inner">
-                  {currentUser.photoURL && !avatarError ? (
-                    <img
-                      src={currentUser.photoURL}
-                      alt={currentUser.displayName || currentUser.email}
-                      referrerPolicy="no-referrer"
-                      crossOrigin="anonymous"
-                      className="w-7 h-7 rounded-full object-cover border border-teal-500/30"
-                      onError={() => setAvatarError(true)}
-                    />
-                  ) : (
-                    <div className="w-7 h-7 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/30 font-semibold text-xs flex items-center justify-center">
-                      {currentUser.displayName
-                        ? currentUser.displayName.charAt(0).toUpperCase()
-                        : currentUser.email
-                          ? currentUser.email.charAt(0).toUpperCase()
-                          : 'U'}
-                    </div>
-                  )}
-                  <div className="hidden sm:block text-left text-xs pr-1">
-                    <p className="font-semibold text-slate-200 leading-tight">
-                      {currentUser.displayName || currentUser.email.split('@')[0]}
-                    </p>
-                    <p className="text-teal-400/80 text-[11px] leading-tight truncate max-w-[160px]">
-                      {currentUser.email}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={handleLogout}
-                  title="Log out"
-                  aria-label="Log out"
-                  className="p-2 rounded-xl text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 border border-transparent hover:border-rose-500/30 transition-colors cursor-pointer"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            ) : (
-              <NavigationMenu className="dark">
-                <NavigationMenuList className="flex items-center gap-1.5 sm:gap-2">
-                  <NavigationMenuItem>
-                    <NavigationMenuLink
-                      active={authView === 'hero'}
-                      asChild
-                      className={cn(
-                        "group relative inline-flex items-center justify-center font-medium text-xs text-slate-300 transition-all cursor-pointer",
-                        "hover:text-white",
-                        "data-active:text-white"
-                      )}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAuthMode('login');
-                          setAuthView('auth');
-                        }}
-                        className="px-4 py-2 rounded-full text-slate-300 hover:text-white hover:bg-white/[0.08] transition-all duration-200 cursor-pointer"
-                      >
-                        Sign In
-                      </button>
-                    </NavigationMenuLink>
-                  </NavigationMenuItem>
-                  <NavigationMenuItem>
-                    <NavigationMenuLink
-                      active={authView === 'auth' && authMode === 'signup'}
-                      asChild
-                      className={cn(
-                        "group relative inline-flex items-center justify-center font-medium text-xs text-slate-300 transition-all cursor-pointer"
-                      )}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAuthMode('signup');
-                          setAuthView('auth');
-                        }}
-                        className="px-5 py-2 rounded-full bg-gradient-to-r from-purple-600 via-violet-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold transition-all duration-300 shadow-[0_0_24px_rgba(168,85,247,0.4)] hover:shadow-[0_0_32px_rgba(168,85,247,0.6)] active:scale-95 cursor-pointer ring-1 ring-purple-400/40"
-                      >
-                        Get Started
-                      </button>
-                    </NavigationMenuLink>
-                  </NavigationMenuItem>
-                </NavigationMenuList>
-              </NavigationMenu>
-            )}
-          </div>
-        </div>
-      </header>
+      <Navbar
+        currentUser={currentUser}
+        authView={authView}
+        setAuthView={setAuthView}
+        authMode={authMode}
+        setAuthMode={setAuthMode}
+        avatarError={avatarError}
+        setAvatarError={setAvatarError}
+        handleLogout={handleLogout}
+      />
 
       {/* Main Content Area */}
       {!currentUser ? (
@@ -591,247 +542,250 @@ export default function App() {
           />
         )
       ) : (
-      <main className="relative z-10 flex-1 w-full px-4 sm:px-6 lg:px-10 xl:px-12 py-6 sm:py-8">
-          <div>
-            {/* Dashboard Heading Banner */}
-            <div className="bg-gradient-to-r from-[#101b2d] via-[#132238] to-[#101b2d] border border-teal-500/20 rounded-2xl p-5 sm:p-6 mb-6 shadow-[0_4px_24px_rgba(0,0,0,0.35)] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                    Your Passwords
-                  </h1>
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-teal-500/15 text-teal-300 border border-teal-500/30">
-                    <Sparkles className="w-2.5 h-2.5" /> AES-256
-                  </span>
-                </div>
-                <p className="text-xs sm:text-sm text-slate-400">
-                  All your logins, encrypted and organized in one place.
-                </p>
-              </div>
+      <main className="relative z-10 flex-1 w-full bg-[#05050a] overflow-hidden">
+        {/* Grid + Aurora background matching hero */}
+        <div className="footer-aurora absolute left-1/2 top-1/3 h-[60vh] w-[80vw] -translate-x-1/2 -translate-y-1/2 animate-footer-breathe rounded-[50%] blur-[100px] pointer-events-none z-0" />
+        <div className="footer-bg-grid absolute inset-0 z-0 pointer-events-none" />
+        <div className="pointer-events-none absolute inset-0 overflow-hidden z-0">
+          <div className="absolute -top-32 -left-32 w-[400px] h-[400px] rounded-full bg-purple-700/15 blur-[120px]" />
+          <div className="absolute top-1/3 -right-32 w-[420px] h-[420px] rounded-full bg-indigo-700/10 blur-[130px]" />
+        </div>
 
-              <div className="flex items-center">
+        <div className="relative z-10 w-full px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
+          {/* Dashboard Heading */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                Your Passwords
+              </h1>
+              <p className="text-sm text-slate-400 mt-1">
+                All your logins, organized in one place.
+              </p>
+            </div>
+
+            <div className="flex items-center shrink-0">
+              <button
+                onClick={openCreateModal}
+                className="w-full sm:w-auto min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 active:scale-[0.98] text-white font-semibold text-sm transition-all shadow-[0_4px_14px_rgba(147,51,234,0.3)] cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add Password</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Search and Statistics */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-8">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-500 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Search websites, apps or usernames..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full min-h-[46px] bg-[#0c0d1b]/70 border border-purple-500/15 rounded-xl pl-11 pr-16 py-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40 transition-all"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-medium text-purple-400 hover:text-purple-300 cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <div className="inline-flex min-h-[46px] items-center justify-center gap-2 text-xs font-semibold text-slate-400 bg-[#0c0d1b]/70 border border-purple-500/15 px-4 py-3 rounded-xl whitespace-nowrap">
+              <Shield className="w-4 h-4 text-purple-400" />
+              <span>{filteredItems.length} saved passwords</span>
+            </div>
+          </div>
+
+          {/* Content State */}
+          {dataLoading ? (
+            <div className="flex flex-col items-center justify-center py-24 text-slate-400 gap-3">
+              <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
+              <span className="text-sm font-medium">Loading your saved credentials...</span>
+            </div>
+          ) : filteredItems.length === 0 ? (
+            <div className="text-center py-16 px-6 bg-[#0c0d1b]/70 border border-purple-500/15 rounded-2xl">
+              <div className="inline-flex p-3.5 rounded-2xl bg-purple-500/10 text-purple-400 border border-purple-500/20 mb-5">
+                <PixelKeyIcon className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-semibold text-white mb-2">
+                {searchQuery ? 'No matching passwords' : 'Your vault is waiting.'}
+              </h3>
+              <p className="text-sm text-slate-400 max-w-sm mx-auto mb-7 leading-relaxed">
+                {searchQuery
+                  ? `No credentials match "${searchQuery}".`
+                  : 'Add your first login and keep everything organized in one place.'}
+              </p>
+              {searchQuery ? (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white/[0.06] text-slate-200 hover:bg-white/[0.1] text-sm font-medium border border-purple-500/15 transition-colors cursor-pointer"
+                >
+                  Clear search
+                </button>
+              ) : (
                 <button
                   onClick={openCreateModal}
-                  className="w-full sm:w-auto min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 active:scale-[0.98] text-white font-semibold text-sm transition-all shadow-lg shadow-teal-500/25 ring-1 ring-white/10 cursor-pointer"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 active:scale-[0.98] text-white text-sm font-semibold transition-all shadow-[0_4px_14px_rgba(147,51,234,0.3)] cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>Add Password</span>
+                  <span>Add your first password</span>
                 </button>
-              </div>
+              )}
             </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {filteredItems.map((item) => {
+                const isPassVisible = visiblePasswords[item.id];
+                const isCopiedUser = copiedId === `${item.id}-Username`;
+                const isCopiedPass = copiedId === `${item.id}-Password`;
+                const favicon = getFaviconUrl(item);
+                const hasIconError = iconErrors[item.id];
+                const displayUrl = item.url
+                  ? item.url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+                  : '';
 
-            {/* Search and Statistics */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-6">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-teal-400/70 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  placeholder="Search websites, apps or usernames..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full min-h-[44px] bg-[#111c2e]/90 border border-teal-500/20 rounded-xl pl-10 pr-16 py-2.5 text-sm text-slate-100 placeholder:text-slate-400 shadow-inner focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 transition-colors"
-                />
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-medium text-teal-400 hover:text-teal-200 cursor-pointer"
+                return (
+                  <div
+                    key={item.id}
+                    className="group relative bg-[#0c0d1b]/70 hover:bg-[#0f1025] border border-purple-500/15 hover:border-purple-500/30 rounded-2xl p-5 transition-all duration-200 flex flex-col justify-between hover:-translate-y-0.5"
                   >
-                    Clear
-                  </button>
-                )}
-              </div>
-
-              <div className="inline-flex min-h-[44px] items-center justify-center gap-2 text-xs font-semibold text-teal-200 bg-[#111c2e]/90 border border-teal-500/25 px-4 py-2.5 rounded-xl whitespace-nowrap shadow-sm">
-                <Shield className="w-4 h-4 text-teal-400" />
-                <span>{filteredItems.length} saved passwords</span>
-              </div>
-            </div>
-
-            {/* Content State */}
-            {dataLoading ? (
-              <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-2.5">
-                <Loader2 className="w-6 h-6 animate-spin text-teal-400" />
-                <span className="text-sm">Loading your saved credentials...</span>
-              </div>
-            ) : filteredItems.length === 0 ? (
-              <div className="text-center py-14 px-6 bg-[#101b2d]/80 border border-teal-500/20 rounded-2xl shadow-xl">
-                <div className="inline-flex p-3.5 rounded-2xl bg-teal-500/10 text-teal-400 border border-teal-500/20 mb-4">
-                  <PixelKeyIcon className="w-6 h-6 text-teal-400" />
-                </div>
-                <h3 className="text-base font-semibold text-white mb-1.5">
-                  {searchQuery ? 'No matching passwords' : 'Your vault is empty'}
-                </h3>
-                <p className="text-sm text-slate-400 max-w-sm mx-auto mb-6">
-                  {searchQuery
-                    ? `No credentials match "${searchQuery}".`
-                    : 'Save your first login and keep everything organized in one place.'}
-                </p>
-                {searchQuery ? (
-                  <button
-                    onClick={() => setSearchQuery('')}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#16243b] text-slate-200 hover:bg-[#1a2d4a] text-sm font-medium border border-teal-500/20 transition-colors cursor-pointer"
-                  >
-                    Clear search
-                  </button>
-                ) : (
-                  <button
-                    onClick={openCreateModal}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 text-white text-sm font-semibold transition-all shadow-lg shadow-teal-500/25 cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Add your first password</span>
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
-                {filteredItems.map((item) => {
-                  const isPassVisible = visiblePasswords[item.id];
-                  const isCopiedUser = copiedId === `${item.id}-Username`;
-                  const isCopiedPass = copiedId === `${item.id}-Password`;
-                  const favicon = getFaviconUrl(item);
-                  const hasIconError = iconErrors[item.id];
-                  const displayUrl = item.url
-                    ? item.url.replace(/^https?:\/\//, '').replace(/\/$/, '')
-                    : '';
-
-                  return (
-                    <div
-                      key={item.id}
-                      className="group relative bg-[#101b2d]/90 hover:bg-[#132238] border border-teal-500/20 hover:border-teal-400/50 rounded-2xl p-4 sm:p-5 transition-all duration-200 flex flex-col justify-between shadow-[0_4px_16px_rgba(0,0,0,0.3)] hover:shadow-[0_12px_28px_rgba(20,184,166,0.15)] hover:-translate-y-0.5"
-                    >
-                      <div>
-                        {/* Card Header: Favicon, Website, URL & Actions */}
-                        <div className="flex items-start justify-between gap-3 mb-4">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-10 h-10 rounded-xl bg-[#0c1422] border border-teal-500/25 flex items-center justify-center overflow-hidden shrink-0 shadow-inner">
-                              {!hasIconError ? (
-                                <img
-                                  src={favicon}
-                                  alt={item.website}
-                                  className="w-full h-full object-cover"
-                                  onError={() => setIconErrors(prev => ({ ...prev, [item.id]: true }))}
-                                />
-                              ) : (
-                                <span className="font-bold text-teal-400 text-base">
-                                  {item.website?.charAt(0).toUpperCase()}
-                                </span>
-                              )}
-                            </div>
-                            <div className="min-w-0">
-                              <h3 className="font-semibold text-white text-sm truncate">
-                                {item.website}
-                              </h3>
-                              {item.url ? (
-                                <a
-                                  href={item.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  title={item.url}
-                                  className="text-xs text-teal-400/80 hover:text-teal-300 transition-colors inline-flex items-center gap-1 max-w-full"
-                                >
-                                  <span className="truncate">{displayUrl}</span>
-                                  <ExternalLink className="w-3 h-3 shrink-0" />
-                                </a>
-                              ) : (
-                                <span className="text-xs text-slate-400">Saved login</span>
-                              )}
-                            </div>
+                    <div>
+                      {/* Card Header: Favicon, Website, URL & Actions */}
+                      <div className="flex items-start justify-between gap-3 mb-4">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-xl bg-[#12132a] border border-purple-500/15 flex items-center justify-center overflow-hidden shrink-0">
+                            {!hasIconError ? (
+                              <img
+                                src={favicon}
+                                alt={item.website}
+                                className="w-full h-full object-cover"
+                                onError={() => setIconErrors(prev => ({ ...prev, [item.id]: true }))}
+                              />
+                            ) : (
+                              <span className="font-bold text-purple-400 text-base">
+                                {item.website?.charAt(0).toUpperCase()}
+                              </span>
+                            )}
                           </div>
-
-                          <div className="flex items-center gap-1 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100 transition-opacity">
-                            <button
-                              onClick={() => openEditModal(item)}
-                              title="Edit"
-                              aria-label={`Edit ${item.website}`}
-                              className="p-1.5 text-slate-400 hover:text-teal-300 hover:bg-teal-500/10 rounded-lg transition-colors cursor-pointer"
-                            >
-                              <Edit3 className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => setDeletingItem({ id: item.id, website: item.website })}
-                              title="Delete"
-                              aria-label={`Delete ${item.website}`}
-                              className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                          <div className="min-w-0">
+                            <h3 className="font-semibold text-white text-sm truncate">
+                              {item.website}
+                            </h3>
+                            {item.url ? (
+                              <a
+                                href={item.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={item.url}
+                                className="text-xs text-slate-400 hover:text-purple-400 transition-colors inline-flex items-center gap-1 max-w-full"
+                              >
+                                <span className="truncate">{displayUrl}</span>
+                                <ExternalLink className="w-3 h-3 shrink-0" />
+                              </a>
+                            ) : (
+                              <span className="text-xs text-slate-500">Saved login</span>
+                            )}
                           </div>
                         </div>
 
-                        {/* Username row */}
-                        <div className="bg-[#0b1424]/90 border border-teal-500/15 rounded-xl px-3 py-2 mb-2 flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-2 overflow-hidden mr-2">
-                            <User className="w-3.5 h-3.5 text-teal-400/70 shrink-0" />
-                            <span className="text-slate-200 truncate font-mono">
-                              {item.username || 'No username'}
-                            </span>
-                          </div>
-                          {item.username && (
-                            <button
-                              onClick={() => copyToClipboard(item.username, item.id, 'Username')}
-                              title="Copy username"
-                              aria-label="Copy username"
-                              className="p-1 text-slate-400 hover:text-teal-300 rounded transition-colors shrink-0 cursor-pointer"
-                            >
-                              {isCopiedUser ? (
-                                <Check className="w-3.5 h-3.5 text-teal-400" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          )}
+                        <div className="flex items-center gap-1 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => openEditModal(item)}
+                            title="Edit"
+                            aria-label={`Edit ${item.website}`}
+                            className="p-1.5 text-slate-500 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setDeletingItem({ id: item.id, website: item.website })}
+                            title="Delete"
+                            aria-label={`Delete ${item.website}`}
+                            className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
+                      </div>
 
-                        {/* Password row */}
-                        <div className="bg-[#0b1424]/90 border border-teal-500/15 rounded-xl px-3 py-2 flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-2 overflow-hidden mr-2 font-mono">
-                            <PixelKeyIcon className="w-3.5 h-3.5 text-teal-400/70 shrink-0" />
-                            <span className="text-slate-200 truncate">
-                              {isPassVisible ? item.password : '••••••••••••'}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              onClick={() => togglePasswordVisibility(item.id)}
-                              title={isPassVisible ? 'Hide password' : 'Show password'}
-                              aria-label={isPassVisible ? 'Hide password' : 'Show password'}
-                              className="p-1 text-slate-400 hover:text-teal-300 rounded transition-colors cursor-pointer"
-                            >
-                              {isPassVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                            </button>
-                            <button
-                              onClick={() => copyToClipboard(item.password, item.id, 'Password')}
-                              title="Copy password"
-                              aria-label="Copy password"
-                              className="p-1 text-slate-400 hover:text-teal-300 rounded transition-colors cursor-pointer"
-                            >
-                              {isCopiedPass ? (
-                                <Check className="w-3.5 h-3.5 text-teal-400" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          </div>
+                      {/* Username row */}
+                      <div className="bg-[#12132a] rounded-xl px-3.5 py-2.5 mb-2 flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2 overflow-hidden mr-2">
+                          <User className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                          <span className="text-slate-200 truncate font-mono text-[13px]">
+                            {item.username || 'No username'}
+                          </span>
+                        </div>
+                        {item.username && (
+                          <button
+                            onClick={() => copyToClipboard(item.username, item.id, 'Username')}
+                            title="Copy username"
+                            aria-label="Copy username"
+                            className="p-1 text-slate-500 hover:text-purple-400 rounded transition-colors shrink-0 cursor-pointer"
+                          >
+                            {isCopiedUser ? (
+                              <Check className="w-3.5 h-3.5 text-green-400" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Password row */}
+                      <div className="bg-[#12132a] rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2 overflow-hidden mr-2 font-mono">
+                          <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                          <span className="text-slate-200 truncate text-[13px]">
+                            {isPassVisible ? item.password : '••••••••••••'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => togglePasswordVisibility(item.id)}
+                            title={isPassVisible ? 'Hide password' : 'Show password'}
+                            aria-label={isPassVisible ? 'Hide password' : 'Show password'}
+                            className="p-1 text-slate-500 hover:text-purple-400 rounded transition-colors cursor-pointer"
+                          >
+                            {isPassVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            onClick={() => copyToClipboard(item.password, item.id, 'Password')}
+                            title="Copy password"
+                            aria-label="Copy password"
+                            className="p-1 text-slate-500 hover:text-purple-400 rounded transition-colors cursor-pointer"
+                          >
+                            {isCopiedPass ? (
+                              <Check className="w-3.5 h-3.5 text-green-400" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
                         </div>
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </main>
         )}
 
       {/* Modal: Add or Edit Password */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="bg-[#101b2d] border border-teal-500/30 rounded-2xl w-full max-w-lg p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
+          <div className="bg-[#141418] border border-white/[0.08] rounded-2xl w-full max-w-lg p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-teal-500/15 text-teal-300 border border-teal-500/30 flex items-center justify-center">
-                  <PixelKeyIcon className="w-4 h-4 text-teal-400" />
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-purple-500/15 text-purple-400 border border-purple-500/25 flex items-center justify-center">
+                  <PixelKeyIcon className="w-4 h-4" />
                 </div>
                 <h2 className="text-lg font-bold text-white">
                   {editingItemId ? 'Edit Password' : 'Add Password'}
@@ -840,7 +794,7 @@ export default function App() {
               <button
                 onClick={() => setIsAddModalOpen(false)}
                 aria-label="Close modal"
-                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
               >
                 ✕
               </button>
@@ -848,18 +802,18 @@ export default function App() {
 
             <form onSubmit={handleSavePassword} className="space-y-4" noValidate>
               {formError && (
-                <div className="px-3.5 py-2.5 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-200 text-xs font-medium">
+                <div className="px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs font-medium">
                   {formError}
                 </div>
               )}
 
               {/* Website Name & Live Icon Preview */}
               <div>
-                <label className="block text-xs font-medium text-slate-200 mb-1.5">
+                <label className="block text-xs font-semibold text-slate-200 mb-1.5">
                   Website name <span className="text-rose-400">*</span>
                 </label>
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#0c1422] border border-teal-500/30 flex items-center justify-center shrink-0 overflow-hidden shadow-inner">
+                  <div className="w-10 h-10 rounded-xl bg-[#1e1e24] border border-white/[0.06] flex items-center justify-center shrink-0 overflow-hidden">
                     <img
                       src={previewFaviconUrl}
                       alt="Icon preview"
@@ -873,7 +827,7 @@ export default function App() {
                     />
                   </div>
                   <div className="relative flex-1">
-                    <Globe className="w-4 h-4 text-teal-400/70 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <Globe className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
                       required
@@ -883,26 +837,26 @@ export default function App() {
                         setNewWebsite(e.target.value);
                         if (formError) setFormError('');
                       }}
-                      className="w-full bg-[#0c1422] border border-teal-500/25 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 transition-colors"
+                      className="w-full bg-[#1e1e24] border border-white/[0.08] rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40 transition-all"
                     />
                   </div>
                 </div>
               </div>
 
               {/* Icon Mode Tabs */}
-              <div className="bg-[#0c1422] border border-teal-500/20 rounded-xl p-3">
+              <div className="bg-[#1e1e24] border border-white/[0.06] rounded-xl p-3">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
-                    <Image className="w-3.5 h-3.5 text-teal-400" />
+                  <span className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                    <Image className="w-3.5 h-3.5 text-purple-400" />
                     Website Icon
                   </span>
-                  <div className="flex bg-[#101b2d] p-0.5 rounded-lg border border-teal-500/25 text-[11px]">
+                  <div className="flex bg-[#141418] p-0.5 rounded-lg border border-white/[0.06] text-[11px]">
                     <button
                       type="button"
                       onClick={() => setIconMode('auto')}
                       className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
                         iconMode === 'auto'
-                          ? 'bg-teal-500 text-white font-medium shadow-xs'
+                          ? 'bg-purple-600 text-white font-medium shadow-xs'
                           : 'text-slate-400 hover:text-slate-200'
                       }`}
                     >
@@ -913,7 +867,7 @@ export default function App() {
                       onClick={() => setIconMode('custom')}
                       className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
                         iconMode === 'custom'
-                          ? 'bg-teal-500 text-white font-medium shadow-xs'
+                          ? 'bg-purple-600 text-white font-medium shadow-xs'
                           : 'text-slate-400 hover:text-slate-200'
                       }`}
                     >
@@ -933,7 +887,7 @@ export default function App() {
                       placeholder="Paste image/icon URL (e.g. https://example.com/logo.png)"
                       value={newCustomIcon}
                       onChange={(e) => setNewCustomIcon(e.target.value)}
-                      className="w-full bg-[#101b2d] border border-teal-500/25 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400"
+                      className="w-full bg-[#141418] border border-white/[0.08] rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40"
                     />
                   </div>
                 )}
@@ -941,45 +895,45 @@ export default function App() {
 
               {/* Direct Website URL */}
               <div>
-                <label className="block text-xs font-medium text-slate-200 mb-1.5">
-                  Website URL <span className="text-slate-400 font-normal">(Optional)</span>
+                <label className="block text-xs font-semibold text-slate-200 mb-1.5">
+                  Website URL <span className="text-slate-500 font-normal">(Optional)</span>
                 </label>
                 <div className="relative">
-                  <ExternalLink className="w-4 h-4 text-teal-400/70 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <ExternalLink className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     placeholder="e.g. https://netflix.com/login"
                     value={newUrl}
                     onChange={(e) => setNewUrl(e.target.value)}
-                    className="w-full bg-[#0c1422] border border-teal-500/25 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 transition-colors"
+                    className="w-full bg-[#1e1e24] border border-white/[0.08] rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40 transition-all"
                   />
                 </div>
               </div>
 
               {/* Username */}
               <div>
-                <label className="block text-xs font-medium text-slate-200 mb-1.5">
+                <label className="block text-xs font-semibold text-slate-200 mb-1.5">
                   Username or email
                 </label>
                 <div className="relative">
-                  <User className="w-4 h-4 text-teal-400/70 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <User className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     placeholder="e.g. name@example.com or username"
                     value={newUsername}
                     onChange={(e) => setNewUsername(e.target.value)}
-                    className="w-full bg-[#0c1422] border border-teal-500/25 rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 transition-colors"
+                    className="w-full bg-[#1e1e24] border border-white/[0.08] rounded-xl pl-9 pr-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40 transition-all"
                   />
                 </div>
               </div>
 
               {/* Password */}
               <div>
-                <label className="block text-xs font-medium text-slate-200 mb-1.5">
+                <label className="block text-xs font-semibold text-slate-200 mb-1.5">
                   Password <span className="text-rose-400">*</span>
                 </label>
                 <div className="relative">
-                  <Lock className="w-4 h-4 text-teal-400/70 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type={showNewPassword ? 'text' : 'password'}
                     required
@@ -989,13 +943,13 @@ export default function App() {
                       setNewPassword(e.target.value);
                       if (formError) setFormError('');
                     }}
-                    className="w-full bg-[#0c1422] border border-teal-500/25 rounded-xl pl-9 pr-10 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 font-mono transition-colors"
+                    className="w-full bg-[#1e1e24] border border-white/[0.08] rounded-xl pl-9 pr-10 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40 font-mono transition-all"
                   />
                   <button
                     type="button"
                     onClick={() => setShowNewPassword(!showNewPassword)}
                     aria-label={showNewPassword ? 'Hide password' : 'Show password'}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-teal-300 cursor-pointer"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-purple-400 cursor-pointer"
                   >
                     {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -1003,18 +957,18 @@ export default function App() {
               </div>
 
               {/* Actions */}
-              <div className="pt-3 flex items-center justify-end gap-2.5 border-t border-teal-500/20">
+              <div className="pt-3 flex items-center justify-end gap-2.5 border-t border-white/[0.06]">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 text-sm font-medium transition-colors cursor-pointer"
+                  className="px-4 py-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.06] text-sm font-medium transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={savingItem}
-                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 text-white text-sm font-semibold transition-all shadow-md shadow-teal-500/25 cursor-pointer flex items-center gap-2 disabled:opacity-50"
+                  className="px-5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 active:scale-[0.98] text-white text-sm font-semibold transition-all shadow-[0_4px_14px_rgba(147,51,234,0.3)] cursor-pointer flex items-center gap-2 disabled:opacity-50"
                 >
                   {savingItem && <Loader2 className="w-4 h-4 animate-spin" />}
                   <span>{editingItemId ? 'Update Password' : 'Save Password'}</span>
@@ -1028,14 +982,14 @@ export default function App() {
       {/* Modal: Delete Confirmation */}
       {deletingItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
-          <div className="bg-[#101b2d] border border-rose-500/30 rounded-2xl w-full max-w-sm p-6 shadow-2xl text-center">
-            <div className="w-12 h-12 rounded-2xl bg-rose-950/60 border border-rose-500/40 text-rose-400 flex items-center justify-center mx-auto mb-4">
+          <div className="bg-[#141418] border border-white/[0.08] rounded-2xl w-full max-w-sm p-6 shadow-2xl text-center">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-rose-400 flex items-center justify-center mx-auto mb-4">
               <Trash2 className="w-5 h-5" />
             </div>
             <h3 className="text-base font-bold text-white mb-1.5">
               Delete {deletingItem.website}?
             </h3>
-            <p className="text-xs text-slate-300 mb-6 leading-relaxed">
+            <p className="text-xs text-slate-400 mb-6 leading-relaxed">
               Are you sure you want to permanently delete this saved password? This action cannot be undone.
             </p>
 
@@ -1043,14 +997,14 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setDeletingItem(null)}
-                className="flex-1 py-2.5 rounded-xl bg-[#16243b] hover:bg-[#1c304f] text-slate-200 font-medium text-xs transition-colors border border-teal-500/20 cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-slate-200 font-medium text-xs transition-colors border border-white/[0.08] cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={confirmDelete}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-colors shadow-md shadow-rose-600/30 cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
               >
                 Yes, Delete
               </button>
@@ -1064,7 +1018,7 @@ export default function App() {
         <footer
           className={`relative z-10 py-5 text-center text-xs ${
             currentUser
-              ? 'border-t border-teal-500/15 bg-[#0d1524]/80 backdrop-blur-sm text-teal-400/80'
+              ? 'border-t border-purple-500/15 bg-[#05050a] text-slate-500'
               : 'border-t border-white/[0.06] bg-[#05050a] text-slate-500'
           }`}
         >

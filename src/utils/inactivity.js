@@ -1,4 +1,4 @@
-export const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+export const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 export const LAST_ACTIVITY_KEY = 'loginkeep_last_activity';
 export const LOGOUT_BROADCAST_KEY = 'loginkeep_logout_event';
 export const INACTIVITY_MESSAGE = 'Your session expired due to inactivity. Please sign in again.';
